@@ -9,7 +9,7 @@ commit your application's Cargo.lock.
 | wgpu family | https://github.com/enz1m/enzim-wgpu | `7f040c8501f6838262c90ede4edfa40940fe2de8` |
 | cosmic-text | https://github.com/enz1m/enzim-cosmic-text | `ad474131e52c0fde5979f8def2889489b50a0480` |
 | cryoglyph | https://github.com/enz1m/enzim-cryoglyph | `eeaaa5585fbb1bac004ca398cfad957fec6be5f3` |
-| winit | https://github.com/enz1m/enzim-winit | `f6ce16941bf815a438db7e628ab1126ce48e31dd` |
+| winit | https://github.com/enz1m/enzim-winit | `40eeb41f8637ef1620afa377ba006874224b6d65` |
 | AccessKit family | https://github.com/enz1m/enzim-accesskit | `e9da4a8da1825e65356f35c94325fb9438cf90d0` |
 | zbus family | https://github.com/enz1m/enzim-zbus | `815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a` |
 
@@ -37,7 +37,7 @@ This is required consumer setup, not something an iced dependency can propagate.
 
 ```toml
 [patch.crates-io]
-winit = { git = "https://github.com/enz1m/enzim-winit.git", rev = "f6ce16941bf815a438db7e628ab1126ce48e31dd" }
+winit = { git = "https://github.com/enz1m/enzim-winit.git", rev = "40eeb41f8637ef1620afa377ba006874224b6d65" }
 zbus = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
 zbus_macros = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
 zbus_names = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
