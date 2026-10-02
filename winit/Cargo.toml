@@ -39,7 +39,9 @@ a11y = ["dep:accesskit", "dep:accesskit_winit"]
 # adapter or release another owner's per-window state.
 a11y-test-hooks = ["a11y"]
 x11 = ["winit/x11"]
-wayland = ["winit/wayland", "winit/wayland-dlopen", "winit/wayland-csd-adwaita", "arboard/wayland-data-control"]
+wayland = ["winit/wayland", "arboard/wayland-data-control"]
+wayland-dlopen = ["winit/wayland-dlopen"]
+wayland-decorations = ["winit/wayland-csd-adwaita"]
 
 [dependencies]
 iced_core.workspace = true
