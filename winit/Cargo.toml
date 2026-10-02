@@ -85,6 +85,3 @@ wayland-protocols = { version = "0.32", features = ["client"] }
 raw-window-handle = "0.6"
 rustix = { version = "1", features = ["event", "time"] }
 
-# Delete once we update to `winit 0.31`
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = { version = "0.5", features = ["relax-sign-encoding"] }
