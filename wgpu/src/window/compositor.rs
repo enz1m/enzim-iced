@@ -100,6 +100,7 @@ impl Compositor {
             power_preference: wgpu::PowerPreference::from_env().unwrap_or(power_preference),
             compatible_surface: compatible_surface.as_ref(),
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         };
 
         let adapter = instance
@@ -674,7 +675,7 @@ fn present_frame(
 
             // Present the frame
             on_pre_present();
-            frame.present();
+            renderer.engine.queue.present(frame);
 
             if let (
                 Some(stages),
@@ -901,6 +902,7 @@ impl graphics::Compositor for Compositor {
                 alpha_mode: self.alpha_mode,
                 view_formats: vec![],
                 desired_maximum_frame_latency: 1,
+                color_space: wgpu::SurfaceColorSpace::Auto,
             },
         );
     }
