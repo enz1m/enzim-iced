@@ -263,7 +263,7 @@ unicode-segmentation = "1.0"
 url = "2.5"
 wasm-bindgen-futures = "0.4"
 wasmtimer = "0.4.2"
-web-sys = "=0.3.85"
+web-sys = "=0.3.104"
 web-time = "1.1"
 wgpu = { git = "https://github.com/enz1m/enzim-wgpu.git", rev = "c62972c9be1326882c4b4f1939d8a2713e42d210", version = "30", default-features = false, features = ["std", "wgsl"] }
 winit = { git = "https://github.com/enz1m/enzim-winit.git", rev = "40eeb41f8637ef1620afa377ba006874224b6d65", default-features = false, features = ["rwh_06"] }
