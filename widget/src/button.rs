@@ -337,8 +337,6 @@ where
                         if cursor.is_over(bounds) {
                             shell.publish(on_press.get());
                         }
-
-                        shell.capture_event();
                     }
                 }
             }
