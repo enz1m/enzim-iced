@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! A gradient that can be used as a fill for some geometry.
 //!
 //! For a gradient that you can use as a background variant for a widget, see [`Gradient`].
@@ -132,6 +133,23 @@ pub struct Packed {
     // 8 offsets, 8x 16 bit floats packed into 4 u32s
     offsets: [u32; 4],
     direction: [f32; 4],
+}
+
+impl Packed {
+    /// Moves the packed gradient by `translation` (enzICED #2219 scene replay).
+    ///
+    /// `direction` is the `(start, end)` chord of the gradient in the SAME
+    /// absolute space the quad's position lives in (see [`pack`]), so a
+    /// replayed quad that moves without moving its gradient keeps a
+    /// screen-fixed gradient sliding under travelling content. Translating the
+    /// chord is what makes a replayed translated gradient quad identical to a
+    /// directly drawn one.
+    pub fn translate(&mut self, translation: crate::core::Vector) {
+        self.direction[0] += translation.x;
+        self.direction[1] += translation.y;
+        self.direction[2] += translation.x;
+        self.direction[3] += translation.y;
+    }
 }
 
 /// Creates a new [`Packed`] gradient for use in shader code.

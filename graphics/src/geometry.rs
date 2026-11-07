@@ -1,4 +1,6 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Build and draw geometry.
+pub mod border;
 pub mod fill;
 pub mod frame;
 pub mod path;
@@ -32,6 +34,19 @@ pub trait Renderer: core::Renderer {
 
     /// Creates a new [`Self::Frame`].
     fn new_frame(&self, bounds: Rectangle) -> Self::Frame;
+
+    /// Draws a declarative border at its live allocation, with owned capture when supported.
+    fn draw_layout_border(
+        &mut self,
+        node: core::renderer::NodeId,
+        bounds: Rectangle,
+        border: border::Border,
+    ) where
+        Self: Sized,
+    {
+        let _ = node;
+        border::draw(self, bounds, border);
+    }
 
     /// Draws the given [`Self::Geometry`].
     fn draw_geometry(&mut self, geometry: Self::Geometry);

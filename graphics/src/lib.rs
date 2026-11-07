@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! A bunch of backend-agnostic types that can be leveraged to build a renderer
 //! for [`iced`].
 //!
@@ -17,8 +18,12 @@ pub mod compositor;
 pub mod damage;
 pub mod gradient;
 pub mod image;
+pub mod lane;
 pub mod layer;
 pub mod mesh;
+pub mod presentation;
+#[doc(hidden)]
+pub mod resource;
 pub mod shell;
 pub mod text;
 
