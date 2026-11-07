@@ -36,6 +36,8 @@ log.workspace = true
 raw-window-handle.workspace = true
 rustc-hash.workspace = true
 thiserror.workspace = true
+# enzICED: grapheme positions for our text_input (upstream dropped it with #3404).
+unicode-segmentation.workspace = true
 
 image.workspace = true
 image.optional = true
@@ -45,3 +47,12 @@ kamadak-exif.optional = true
 
 lyon_path.workspace = true
 lyon_path.optional = true
+
+# enzUI-ICED #1809: the cosmic-text dirty/shaping counters exist only for this
+# crate's own regression tests. Declaring the feature as a DEV dependency (the
+# workspace resolver keeps dev-dependency features out of a normal build) means
+# a product build of `iced_graphics` links the stub counters, which are
+# `const fn` no-ops. The `_1809` gates fail loudly if the feature is missing:
+# they assert the conservative path still reports non-zero work.
+[dev-dependencies]
+cosmic-text = { workspace = true, features = ["instrumentation"] }

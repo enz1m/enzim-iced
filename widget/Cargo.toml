@@ -47,6 +47,18 @@ iced_highlighter.workspace = true
 iced_highlighter.optional = true
 
 [dev-dependencies]
+# enzUI-ICED #1802: the drag-coalescing test drives `UserInterface::update`
+# on a real `text_editor` inside a `scrollable`, which needs a `text::Renderer`
+# implementation. The software backend is enough (no GPU probing, no wgpu
+# feature gate on top-level `iced`), and it keeps the test's cold build
+# small enough for the admitted <=40s ceiling.
+#
+# `iced_tiny_skia` transitively depends on `softbuffer`, whose backend
+# dispatch enum has zero variants until AT LEAST one platform feature is
+# enabled -- otherwise it fails to build with E0004/E0282/E0283/E0392. The
+# workspace dep sets `default-features = false`; re-enable `x11` here so
+# the test can compile on this Linux host. No window is created.
+iced_tiny_skia = { workspace = true, features = ["x11"] }
 iced_test.workspace = true
 
 iced_renderer.workspace = true

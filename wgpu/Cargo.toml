@@ -13,12 +13,71 @@ keywords.workspace = true
 [lints]
 workspace = true
 
+# enzICED #41 stage 2: pixel test (tests/rounded_clip.rs) drives the async
+# headless renderer; pollster blocks on it. Dev-only, so a stock build is
+# unaffected. Version matches the one already in Cargo.lock.
+[dev-dependencies]
+pollster = "0.4"
+
+# enzICED #306: the image per-corner radius test needs `core::image::Renderer`,
+# which is behind the `image` feature. Gate it rather than let a default-feature
+# `cargo test` fail to compile.
+[[test]]
+name = "image_border_radius"
+required-features = ["image"]
+
+[[test]]
+name = "shared_render_pass"
+required-features = ["image"]
+
+[[test]]
+name = "material_composite_pass"
+
+# enzICED patch 14 (#351). `core::svg::Renderer` is implemented behind
+# `#[cfg(feature = "svg")]` (`wgpu/src/lib.rs:857`), so without this the test
+# fails to compile with `no method named draw_svg`, and `cargo test -p iced_wgpu`
+# cannot build ANY integration test in this crate. Mirrors `image_border_radius`.
+[[test]]
+name = "svg_tint_alpha"
+required-features = ["svg"]
+
+# enzICED #41 stage 3. Drives `core::image::Renderer::draw_image` (behind the
+# `image` feature) as well as the mesh path, so it must be gated the same way
+# as `image_border_radius`.
+[[test]]
+name = "rounded_clip_images_meshes"
+required-features = ["image"]
+
+# enzICED #1512: drives both raster and SVG cache epochs through real frames.
+[[test]]
+name = "image_cache_eviction"
+required-features = ["image", "svg"]
+
+# enzICED #1588: exercises raster and SVG target redirection together.
+[[test]]
+name = "layer_alpha"
+required-features = ["image", "svg"]
+
+[[test]]
+name = "rounded_clip_composition"
+required-features = ["image"]
+
+[[test]]
+name = "rounded_clip_elision"
+required-features = ["image"]
+
+[[test]]
+name = "large_artwork_replay"
+required-features = ["image"]
+
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
 all-features = true
 
 [features]
-default = ["wgpu/default"]
+default = ["wgpu/default", "vulkan"]
+# Opens Vulkan devices able to import DMA-BUF images (`device`).
+vulkan = ["wgpu/vulkan", "dep:ash"]
 geometry = ["iced_graphics/geometry", "lyon"]
 image = ["iced_graphics/image", "guillotiere"]
 svg = ["iced_graphics/svg", "resvg", "guillotiere"]
@@ -40,6 +99,7 @@ log.workspace = true
 rustc-hash.workspace = true
 thiserror.workspace = true
 wgpu.workspace = true
+ash = { version = "0.38", optional = true }
 
 lyon.workspace = true
 lyon.optional = true

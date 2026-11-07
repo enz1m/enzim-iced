@@ -40,3 +40,7 @@ iced_wgpu.optional = true
 
 log.workspace = true
 thiserror.workspace = true
+
+[[test]]
+name = "layer_alpha_fallback"
+required-features = ["tiny-skia", "x11"]

@@ -37,3 +37,11 @@ tiny-skia.workspace = true
 
 resvg.workspace = true
 resvg.optional = true
+
+[[test]]
+name = "layer_alpha"
+required-features = ["image", "svg"]
+
+[[test]]
+name = "image_border_radius"
+required-features = ["image"]

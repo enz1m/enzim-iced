@@ -16,4 +16,5 @@ workspace = true
 [dependencies]
 iced_core.workspace = true
 
+syntect.workspace = true
 two-face.workspace = true

@@ -18,12 +18,31 @@ default = ["x11", "wayland"]
 debug = ["iced_debug/enable"]
 sysinfo = ["dep:sysinfo"]
 unconditional-rendering = []
-linux-theme-detection = ["dep:mundy", "mundy/async-io", "mundy/color-scheme"]
+performance-observer = ["iced_runtime/performance-observer"]
+linux-theme-detection = [
+    "dep:mundy",
+    "mundy/async-io",
+    "mundy/color-scheme",
+    "mundy/reduced-motion",
+]
 image = ["iced_runtime/image", "arboard/image-data"]
+# Accessibility (AT-SPI / UI Automation) via AccessKit. Off by default; when
+# enabled iced_winit hosts an `accesskit_winit::Adapter` per window and pushes
+# `accesskit::TreeUpdate`s produced by an app-supplied collector bridge, and
+# routes `ActionRequest`s back as iced events. (enzUI-ICED #162.)
+a11y = ["dep:accesskit", "dep:accesskit_winit"]
+# enzICED #2680: read-only re-exports of the event loop's own accessibility
+# calls (frame publish, window-closed edge, request delivery) for a hosted test
+# that has no native window. Not enabled by the default `a11y` feature: that
+# product surface deliberately exposes neither the publish call nor the close
+# edge, because an application calling them would publish outside a window
+# adapter or release another owner's per-window state.
+a11y-test-hooks = ["a11y"]
 x11 = ["winit/x11"]
 wayland = ["winit/wayland", "winit/wayland-dlopen", "winit/wayland-csd-adwaita", "arboard/wayland-data-control"]
 
 [dependencies]
+iced_core.workspace = true
 iced_debug.workspace = true
 iced_program.workspace = true
 iced_runtime.workspace = true
@@ -37,6 +56,11 @@ winit.workspace = true
 sysinfo.workspace = true
 sysinfo.optional = true
 
+accesskit.workspace = true
+accesskit.optional = true
+accesskit_winit.workspace = true
+accesskit_winit.optional = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arboard.workspace = true
 
@@ -48,6 +72,16 @@ wasm-bindgen-futures.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 mundy.workspace = true
 mundy.optional = true
+
+# enzICED #2219: real `wp_presentation` feedback. These are the versions winit
+# already resolves, reached directly so a guest queue can be reconstituted on
+# winit's own `wl_display` -- never a second connection. The `system` feature
+# must stay unified with winit's libwayland backend; the design is invalid
+# against the pure-Rust backend because the raw pointers would not be shared.
+wayland-client = { version = "0.31", features = ["log"] }
+wayland-protocols = { version = "0.32", features = ["client"] }
+raw-window-handle = "0.6"
+rustix = { version = "1", features = ["event", "time"] }
 
 # Delete once we update to `winit 0.31`
 [target.'cfg(target_os = "macos")'.dependencies]

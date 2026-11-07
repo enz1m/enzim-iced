@@ -23,7 +23,6 @@ maintenance = { status = "actively-developed" }
 
 [features]
 default = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "x11", "wayland"]
-# Enables the `wgpu` GPU-accelerated renderer with all its default features (Vulkan, Metal, DX12, OpenGL, and WebGPU)
 wgpu = ["wgpu-bare", "iced_renderer/wgpu"]
 # Enables the `wgpu` GPU-accelerated renderer with the minimum required features (no backends!)
 wgpu-bare = ["iced_renderer/wgpu-bare", "iced_widget/wgpu"]
@@ -57,6 +56,9 @@ tokio = ["iced_futures/tokio"]
 smol = ["iced_futures/smol"]
 # Enables querying system information
 sysinfo = ["iced_winit/sysinfo"]
+# Enables the AccessKit (AT-SPI / UI Automation) accessibility bridge in the
+# winit backend (enzUI-ICED #162). Inert until an app registers a tree builder.
+a11y = ["iced_winit/a11y"]
 # Enables broken "sRGB linear" blending to reproduce color management of the Web
 web-colors = ["iced_renderer/web-colors"]
 # Enables pixel snapping for crisp edges by default (can cause jitter!)
@@ -79,6 +81,9 @@ advanced-shaping = ["iced_core/advanced-shaping"]
 strict-assertions = ["iced_renderer/strict-assertions"]
 # Redraws on every runtime event, and not only when a widget requests it
 unconditional-rendering = ["iced_winit/unconditional-rendering"]
+# Enables the opt-in per-window performance observer. Collection is still off
+# until `performance::enable` is called.
+performance-observer = ["iced_runtime/performance-observer", "iced_winit/performance-observer"]
 # Enables support for the `sipper` library
 sipper = ["iced_runtime/sipper"]
 # Enables Linux system theme detection
@@ -117,8 +122,19 @@ iced_test.workspace = true
 iced_wgpu.workspace = true
 iced_renderer.workspace = true
 
+# Used by `tests/rich_text_theme.rs` to rasterise on the CPU and read back
+# pixels, so the theme-resolution tests need no GPU.
+iced_runtime.workspace = true
+iced_tiny_skia.workspace = true
+
 iced.workspace = true
 iced.features = ["advanced"]
+
+# A windowless daemon must keep processing messages under a tight budget.
+# It runs the event loop on the main thread, so it needs its own `main`.
+[[test]]
+name = "background_fairness"
+harness = false
 
 [[bench]]
 name = "wgpu"
@@ -161,19 +177,22 @@ members = [
     "winit",
     "examples/*",
 ]
+exclude = ["vendor/softbuffer"]
 
 [workspace.package]
 version = "0.15.0-dev"
 authors = ["Héctor Ramón Jiménez <hector@hecrj.dev>"]
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/iced-rs/iced"
-homepage = "https://iced.rs"
+repository = "https://github.com/enz1m/enzim-iced"
+homepage = "https://github.com/enz1m/enzim-iced"
 categories = ["gui"]
 keywords = ["gui", "ui", "graphics", "interface", "widgets"]
 rust-version = "1.93"
 
 [workspace.dependencies]
+accesskit = { version = "0.24", git = "https://github.com/enz1m/enzim-accesskit.git", rev = "e9da4a8da1825e65356f35c94325fb9438cf90d0" }
+accesskit_winit = { git = "https://github.com/enz1m/enzim-accesskit.git", rev = "e9da4a8da1825e65356f35c94325fb9438cf90d0", version = "0.33", default-features = false, features = ["accesskit_unix", "tokio", "rwh_06"] }
 iced = { version = "0.15.0-dev", path = "." }
 iced_beacon = { version = "0.15.0-dev", path = "beacon" }
 iced_core = { version = "0.15.0-dev", path = "core" }
@@ -199,8 +218,8 @@ bitflags = "2.0"
 bytemuck = { version = "1.0", features = ["derive"] }
 bytes = "1.6"
 cargo-hot = { version = "0.1", package = "cargo-hot-protocol" }
-cosmic-text = { git = "https://github.com/hecrj/cosmic-text.git", rev = "1cdc3e0fcda67e38946db57df777181e4569d7c0" }
-cryoglyph = { git = "https://github.com/iced-rs/cryoglyph.git", rev = "b4576782d7c22ecef973d32cf5b18881ad14fe89" }
+cosmic-text = { git = "https://github.com/enz1m/enzim-cosmic-text.git", rev = "ad474131e52c0fde5979f8def2889489b50a0480", version = "0.19" }
+cryoglyph = { git = "https://github.com/enz1m/enzim-cryoglyph.git", rev = "eeaaa5585fbb1bac004ca398cfad957fec6be5f3" }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 glam = "0.33.2"
 guillotiere = "0.6"
@@ -227,9 +246,14 @@ serde = "1.0"
 sha2 = "0.10"
 sipper = "0.2"
 smol = "2"
-smol_str = "0.2"
-softbuffer = { version = "0.4", default-features = false }
+smol_str = "0.3"
+softbuffer = { version = "0.4", path = "vendor/softbuffer", default-features = false }
 sysinfo = "0.33"
+# `iced_highlighter` calls `ThemeSet::load_defaults`, which exists only under
+# syntect's `default-themes`. Requesting that one feature here, instead of
+# two-face's `syntect-default-fancy` bundle, keeps `yaml-load` -- and with it
+# the unmaintained `yaml-rust` -- out of the graph.
+syntect = { version = "5.3", default-features = false, features = ["default-themes", "parsing", "regex-fancy"] }
 thiserror = "2"
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
 tokio = "1.0"
@@ -241,8 +265,8 @@ wasm-bindgen-futures = "0.4"
 wasmtimer = "0.4.2"
 web-sys = "=0.3.85"
 web-time = "1.1"
-wgpu = { version = "29", default-features = false, features = ["std", "wgsl"] }
-winit = { git = "https://github.com/iced-rs/winit.git", rev = "05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed", default-features = false, features = ["rwh_06"] }
+wgpu = { git = "https://github.com/enz1m/enzim-wgpu.git", rev = "7f040c8501f6838262c90ede4edfa40940fe2de8", version = "29", default-features = false, features = ["std", "wgsl"] }
+winit = { git = "https://github.com/enz1m/enzim-winit.git", rev = "f6ce16941bf815a438db7e628ab1126ce48e31dd", default-features = false, features = ["rwh_06"] }
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "deny", priority = -1 }
@@ -271,3 +295,21 @@ useless_conversion = "deny"
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "forbid"
+
+# accesskit_winit 0.33 depends on crates.io `winit ^0.30.5`; iced depends on a
+# git fork of winit (enzWinit, based on 0.30.8). Without this
+# patch Cargo would resolve two separate winit crates whose types don't unify,
+# breaking the AccessKit adapter (which takes `&winit::window::Window`). Force
+# the crates.io winit slot to iced's fork so there is a single winit in the
+# dependency graph. Same rev as the direct dependency above. (enzICED fork,
+# enzUI-ICED #162.)
+# Applications enabling a11y must copy the patch table to their workspace root.
+# Cargo does not inherit dependency patch tables. See docs/DEPENDENCIES.md.
+[patch.crates-io]
+winit = { git = "https://github.com/enz1m/enzim-winit.git", rev = "f6ce16941bf815a438db7e628ab1126ce48e31dd" }
+zbus = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
+zbus_macros = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
+zbus_names = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
+zvariant = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
+zvariant_derive = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
+zvariant_utils = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }

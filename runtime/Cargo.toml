@@ -13,6 +13,9 @@ keywords.workspace = true
 [features]
 selector = ["dep:iced_selector"]
 image = ["iced_core/image"]
+# Opt-in per-window timing observer. Runtime collection remains off until
+# `performance::enable`, whose disabled path is allocation-free.
+performance-observer = []
 
 [lints]
 workspace = true
@@ -21,6 +24,7 @@ workspace = true
 bytes.workspace = true
 iced_core.workspace = true
 iced_futures.workspace = true
+log.workspace = true
 
 thiserror.workspace = true
 
