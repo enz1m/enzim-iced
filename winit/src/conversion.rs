@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Convert [`winit`] types into [`iced_runtime`] types, and viceversa.
 //!
 //! [`winit`]: https://github.com/rust-windowing/winit
@@ -135,14 +136,112 @@ pub fn window_attributes(
         {
             use winit::platform::wayland::WindowAttributesExtWayland;
 
-            attributes = attributes.with_name(
-                &settings.platform_specific.application_id,
-                &settings.platform_specific.application_id,
+            attributes = attributes
+                .with_name(
+                    &settings.platform_specific.application_id,
+                    &settings.platform_specific.application_id,
+                )
+                .with_app_drawn_decorations(settings.platform_specific.app_drawn_decorations);
+
+            if let Some(session) = &settings.platform_specific.session {
+                attributes =
+                    attributes.with_session(session.session_id.clone(), session.toplevel.clone());
+            }
+
+            attributes = attributes.with_window_shadow(
+                settings
+                    .platform_specific
+                    .shadow
+                    .as_ref()
+                    .map(window_shadow),
             );
+        }
+        #[cfg(all(feature = "x11", not(feature = "wayland")))]
+        {
+            use winit::platform::x11::WindowAttributesExtX11;
+
+            attributes = attributes
+                .with_app_drawn_decorations(settings.platform_specific.app_drawn_decorations);
         }
     }
 
     attributes
+}
+
+/// Converts a winit gesture phase (enzICED).
+pub fn gesture_phase(phase: winit::event::TouchPhase) -> crate::core::gesture::Phase {
+    use crate::core::gesture::Phase;
+    match phase {
+        winit::event::TouchPhase::Started => Phase::Started,
+        winit::event::TouchPhase::Moved => Phase::Moved,
+        winit::event::TouchPhase::Ended => Phase::Ended,
+        winit::event::TouchPhase::Cancelled => Phase::Cancelled,
+    }
+}
+
+/// Describes a winit monitor (enzICED).
+pub fn monitor(monitor: &winit::monitor::MonitorHandle) -> window::Monitor {
+    let position = monitor.position();
+    let size = monitor.size();
+    window::Monitor {
+        name: monitor.name(),
+        position: Point::new(position.x, position.y),
+        size: Size::new(size.width, size.height),
+        scale_factor: monitor.scale_factor(),
+        // A virtual output reports 0 mHz: unknown, not zero.
+        refresh_rate_millihertz: monitor.refresh_rate_millihertz().filter(|rate| *rate > 0),
+    }
+}
+
+/// Converts a winit tablet tool event (enzICED).
+pub fn stylus_event(
+    event: &winit::event::TabletToolEvent,
+    scale_factor: f32,
+) -> crate::core::stylus::Event {
+    use crate::core::stylus::{Button, Phase, Tool, ToolKind};
+    use winit::event::{ElementState, TabletToolKind, TabletToolPhase};
+
+    let kind = match event.tool.kind {
+        TabletToolKind::Pen => ToolKind::Pen,
+        TabletToolKind::Eraser => ToolKind::Eraser,
+        TabletToolKind::Brush => ToolKind::Brush,
+        TabletToolKind::Pencil => ToolKind::Pencil,
+        TabletToolKind::Airbrush => ToolKind::Airbrush,
+        TabletToolKind::Finger => ToolKind::Finger,
+        TabletToolKind::Mouse => ToolKind::Mouse,
+        TabletToolKind::Lens => ToolKind::Lens,
+    };
+    let phase = match event.phase {
+        TabletToolPhase::ProximityIn => Phase::ProximityIn,
+        TabletToolPhase::Moved => Phase::Moved,
+        TabletToolPhase::Down => Phase::Down,
+        TabletToolPhase::Up => Phase::Up,
+        TabletToolPhase::Button { button, state } => {
+            let button = match button {
+                0x14b => Button::Lower,
+                0x14c => Button::Upper,
+                other => Button::Other(other),
+            };
+            match state {
+                ElementState::Pressed => Phase::ButtonPressed(button),
+                ElementState::Released => Phase::ButtonReleased(button),
+            }
+        }
+        TabletToolPhase::ProximityOut => Phase::ProximityOut,
+    };
+    let position = event.position.to_logical::<f32>(f64::from(scale_factor));
+    crate::core::stylus::Event {
+        tool: Tool {
+            kind,
+            serial: event.tool.serial,
+        },
+        phase,
+        position: Point::new(position.x, position.y),
+        pressure: event.pressure as f32,
+        distance: event.distance as f32,
+        tilt: crate::core::Vector::new(event.tilt.0 as f32, event.tilt.1 as f32),
+        rotation: event.rotation as f32,
+    }
 }
 
 /// Converts a winit window event into an iced event.
@@ -181,6 +280,47 @@ pub fn window_event(
                 winit::event::ElementState::Released => mouse::Event::ButtonReleased(button),
             }))
         }
+        // enzICED: how the compositor decorates and arranges the window.
+        WindowEvent::DecorationsChanged {
+            server_side,
+            tiled,
+            maximized,
+            fullscreen,
+        } => Some(Event::Window(window::Event::DecorationsChanged(
+            window::Decorations {
+                server_side,
+                tiled: window::TiledEdges {
+                    top: tiled.top,
+                    bottom: tiled.bottom,
+                    left: tiled.left,
+                    right: tiled.right,
+                },
+                maximized,
+                fullscreen,
+            },
+        ))),
+        // enzICED: touchpad gestures.
+        WindowEvent::PinchGesture { delta, phase, .. } => {
+            Some(Event::Gesture(crate::core::gesture::Event::Pinch {
+                scale: if delta.is_finite() { delta as f32 } else { 0.0 },
+                phase: gesture_phase(phase),
+            }))
+        }
+        WindowEvent::RotationGesture { delta, phase, .. } => {
+            Some(Event::Gesture(crate::core::gesture::Event::Rotate {
+                degrees: delta,
+                phase: gesture_phase(phase),
+            }))
+        }
+        WindowEvent::PanGesture { delta, phase, .. } => {
+            let delta = delta.to_logical::<f32>(f64::from(scale_factor));
+            Some(Event::Gesture(crate::core::gesture::Event::Swipe {
+                delta: crate::core::Vector::new(delta.x, delta.y),
+                phase: gesture_phase(phase),
+            }))
+        }
+        // enzICED: drawing tablet tools.
+        WindowEvent::TabletTool(tool) => Some(Event::Stylus(stylus_event(&tool, scale_factor))),
         WindowEvent::MouseWheel { delta, .. } => match delta {
             winit::event::MouseScrollDelta::LineDelta(delta_x, delta_y) => {
                 Some(Event::Mouse(mouse::Event::WheelScrolled {
@@ -191,6 +331,24 @@ pub fn window_event(
                 }))
             }
             winit::event::MouseScrollDelta::PixelDelta(position) => {
+                // enzUI #2831: winit reports a `PixelDelta` in *physical*
+                // pixels. The Wayland backend, for instance, takes the
+                // compositor's logical axis delta and calls
+                // `.to_physical(scale_factor)` before emitting the event, so a
+                // finger scroll on a HiDPI output arrives here already
+                // multiplied by the output scale. iced widgets, however, apply
+                // `ScrollDelta::Pixels` straight to *logical* layout offsets
+                // (see `iced_widget::scrollable`), so forwarding the physical
+                // value scrolls `scale_factor` times too far. Normalize with
+                // the same `scale_factor` the `CursorMoved` branch above
+                // already uses -- the authoritative per-window viewport scale,
+                // read live from `State` after `State::update` has applied any
+                // `ScaleFactorChanged` -- keeping scroll distance independent
+                // of output density. `LineDelta` is a unitless tick count, not
+                // a pixel measurement, and is deliberately left untouched.
+                // Coverage: `winit/tests/conversion.rs` (enzUI #2831).
+                let position = position.to_logical::<f64>(f64::from(scale_factor));
+
                 Some(Event::Mouse(mouse::Event::WheelScrolled {
                     delta: mouse::ScrollDelta::Pixels {
                         x: position.x as f32,
@@ -446,6 +604,8 @@ pub fn mouse_interaction(interaction: mouse::Interaction) -> Option<winit::windo
     use mouse::Interaction;
 
     let icon = match interaction {
+        // enzICED: the event loop makes image cursors.
+        Interaction::Custom(_) => return None,
         Interaction::Hidden => {
             return None;
         }
@@ -1140,10 +1300,42 @@ pub fn ime_purpose(purpose: input_method::Purpose) -> winit::window::ImePurpose 
         input_method::Purpose::Normal => winit::window::ImePurpose::Normal,
         input_method::Purpose::Secure => winit::window::ImePurpose::Password,
         input_method::Purpose::Terminal => winit::window::ImePurpose::Terminal,
+        input_method::Purpose::Number => winit::window::ImePurpose::Number,
+        input_method::Purpose::Digits => winit::window::ImePurpose::Digits,
+        input_method::Purpose::Pin => winit::window::ImePurpose::Pin,
+        input_method::Purpose::Phone => winit::window::ImePurpose::Phone,
+        input_method::Purpose::Email => winit::window::ImePurpose::Email,
+        input_method::Purpose::Url => winit::window::ImePurpose::Url,
+        input_method::Purpose::Name => winit::window::ImePurpose::Name,
+        input_method::Purpose::Date => winit::window::ImePurpose::Date,
+        input_method::Purpose::Time => winit::window::ImePurpose::Time,
+        input_method::Purpose::DateTime => winit::window::ImePurpose::DateTime,
     }
 }
 
 // See: https://en.wikipedia.org/wiki/Private_Use_Areas
 fn is_private_use(c: char) -> bool {
     ('\u{E000}'..='\u{F8FF}').contains(&c)
+}
+
+/// Converts a window [`Shadow`](window::Shadow) to winit's (enzICED).
+#[cfg(all(feature = "wayland", target_os = "linux"))]
+pub fn window_shadow(shadow: &window::Shadow) -> winit::platform::wayland::WindowShadow {
+    let layers = |layers: &[window::ShadowLayer]| {
+        layers
+            .iter()
+            .map(|layer| winit::platform::wayland::ShadowLayer {
+                color: [layer.color.r, layer.color.g, layer.color.b, layer.color.a],
+                offset: (layer.offset.x, layer.offset.y),
+                blur: layer.blur,
+                spread: layer.spread,
+            })
+            .collect()
+    };
+    winit::platform::wayland::WindowShadow {
+        corner_radius: shadow.corner_radius,
+        active: layers(&shadow.active),
+        inactive: layers(&shadow.inactive),
+        resize_border: shadow.resize_border,
+    }
 }

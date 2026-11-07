@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::futures::futures::{
     Future, Sink, StreamExt,
     channel::mpsc,
@@ -72,6 +73,16 @@ impl<T: 'static> Proxy<T> {
             },
             worker,
         )
+    }
+
+    /// Returns a reference to the underlying `winit::event_loop::EventLoopProxy`.
+    ///
+    /// Used by the accessibility `ActionBridge` waker (#309): the bridge
+    /// needs to wake the event loop from a foreign (AT-SPI) thread without
+    /// knowing the `Action<T>` generic, so the caller type-erases it into
+    /// a closure before handing it over.
+    pub fn raw(&self) -> &winit::event_loop::EventLoopProxy<Action<T>> {
+        &self.raw
     }
 
     /// Creates an input channel for the [`Proxy`].

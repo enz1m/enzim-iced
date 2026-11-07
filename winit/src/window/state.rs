@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::conversion;
 use crate::core::renderer;
 use crate::core::{Color, Size};
@@ -16,10 +17,15 @@ where
     P::Theme: theme::Base,
 {
     title: String,
+    /// Whether frames clear to transparent; see [`Self::set_clears_transparent`].
+    clears_transparent: bool,
     viewport: Viewport,
     surface_version: u64,
     cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
     modifiers: winit::keyboard::ModifiersState,
+    caps_lock: bool,
+    /// A Caps Lock change not yet reported as an event.
+    caps_lock_changed: bool,
     theme: Option<P::Theme>,
     theme_mode: theme::Mode,
     default_theme: P::Theme,
@@ -71,11 +77,14 @@ where
         };
 
         Self {
+            clears_transparent: false,
             title,
             viewport,
             surface_version: 0,
             cursor_position: None,
             modifiers: winit::keyboard::ModifiersState::default(),
+            caps_lock: false,
+            caps_lock_changed: false,
             theme,
             theme_mode,
             default_theme,
@@ -99,6 +108,11 @@ where
         self.viewport.logical_size()
     }
 
+    /// The current synchronized window title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
     pub fn scale(&self) -> renderer::Scale {
         self.viewport.scale()
     }
@@ -120,6 +134,11 @@ where
         self.modifiers
     }
 
+    /// Caps Lock's new state, once, after it changed.
+    pub fn take_caps_lock_change(&mut self) -> Option<bool> {
+        std::mem::take(&mut self.caps_lock_changed).then_some(self.caps_lock)
+    }
+
     pub fn theme(&self) -> &P::Theme {
         self.theme.as_ref().unwrap_or(&self.default_theme)
     }
@@ -128,8 +147,17 @@ where
         self.theme_mode
     }
 
+    /// The colour every frame of this window clears to.
     pub fn background_color(&self) -> Color {
-        self.style.background_color
+        clear_color(self.clears_transparent, self.style.background_color)
+    }
+
+    /// Clear frames to transparent instead of the program's background: for a
+    /// transparent window that draws its own decorations, whose own frame
+    /// paints its background inside rounded corners, so the corners show the
+    /// desktop rather than the clear colour.
+    pub fn set_clears_transparent(&mut self, clears: bool) {
+        self.clears_transparent = clears;
     }
 
     pub fn text_color(&self) -> Color {
@@ -176,6 +204,10 @@ where
             }
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.modifiers = new_modifiers.state();
+                if new_modifiers.caps_lock() != self.caps_lock {
+                    self.caps_lock = new_modifiers.caps_lock();
+                    self.caps_lock_changed = true;
+                }
             }
             WindowEvent::ThemeChanged(theme) => {
                 self.default_theme =
@@ -258,5 +290,31 @@ where
 
             self.theme_mode = new_mode;
         }
+    }
+}
+
+/// The colour a window's frames clear to: transparent for a window whose own
+/// decorations paint its background, the program's background otherwise.
+fn clear_color(clears_transparent: bool, background: Color) -> Color {
+    if clears_transparent {
+        Color::TRANSPARENT
+    } else {
+        background
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_self_decorated_transparent_window_clears_to_transparent() {
+        let background = Color::from_rgb(0.1, 0.1, 0.12);
+        assert_eq!(clear_color(true, background), Color::TRANSPARENT);
+        assert_eq!(
+            clear_color(false, background),
+            background,
+            "other windows keep their background"
+        );
     }
 }
