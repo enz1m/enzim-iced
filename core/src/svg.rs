@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Load and draw vector graphics.
 use crate::{Color, Radians, Rectangle, Size};
 
@@ -153,6 +154,20 @@ impl std::fmt::Debug for Data {
 pub trait Renderer: crate::Renderer {
     /// Returns the default dimensions of an SVG for the given [`Handle`].
     fn measure_svg(&self, handle: &Handle) -> Size<u32>;
+
+    /// Binds declared vector allocation paint; unsupported capture still emits ordinary paint.
+    fn draw_layout_svg(
+        &mut self,
+        node: Option<crate::renderer::NodeId>,
+        svg: Svg,
+        bounds: Rectangle,
+        clip_bounds: Rectangle,
+    ) {
+        if let Some(node) = node {
+            self.reject_layout_paint(node);
+        }
+        self.draw_svg(svg, bounds, clip_bounds);
+    }
 
     /// Draws an SVG with the given [`Handle`], an optional [`Color`] filter, and inside the provided `bounds`.
     fn draw_svg(&mut self, svg: Svg, bounds: Rectangle, clip_bounds: Rectangle);

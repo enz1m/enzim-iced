@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::Theme;
 use crate::font;
 use crate::text::highlighter;
@@ -55,6 +56,7 @@ impl Code {
         highlighter::Style {
             color,
             style: (self == Code::Comment).then_some(font::Style::Italic),
+            ..highlighter::Style::default()
         }
     }
 }

@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Handle events of a user interface.
 use crate::clipboard;
 use crate::input_method;
@@ -25,6 +26,12 @@ pub enum Event {
 
     /// A touch event
     Touch(touch::Event),
+
+    /// A touchpad gesture (enzICED)
+    Gesture(crate::gesture::Event),
+
+    /// A drawing tablet tool (enzICED)
+    Stylus(crate::stylus::Event),
 
     /// An input method event
     InputMethod(input_method::Event),

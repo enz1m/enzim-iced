@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Animate your applications.
 use crate::time::{Duration, Instant};
 
@@ -12,8 +13,25 @@ pub struct Animation<T>
 where
     T: Clone + Copy + PartialEq + Float,
 {
-    raw: lilt::Animated<T, Instant>,
-    duration: Duration, // TODO: Expose duration getter in `lilt`
+    raw: lilt::Animated<T, PreciseInstant>,
+    duration: Duration, // lilt does not expose a duration getter.
+    clock_offset: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreciseInstant {
+    at: Instant,
+    offset: Duration,
+}
+
+impl lilt::AnimationTime for PreciseInstant {
+    fn elapsed_since(self, time: Self) -> f32 {
+        self.at
+            .saturating_duration_since(time.at)
+            .saturating_sub(self.offset.saturating_sub(time.offset))
+            .as_secs_f32()
+            * 1_000.0
+    }
 }
 
 impl<T> Animation<T>
@@ -25,6 +43,7 @@ where
         Self {
             raw: lilt::Animated::new(state),
             duration: Duration::from_millis(100),
+            clock_offset: Duration::ZERO,
         }
     }
 
@@ -100,14 +119,38 @@ where
     /// Transitions the [`Animation`] from its current state to the given new state
     /// at the given time, by reference.
     pub fn go_mut(&mut self, new_state: T, at: Instant) {
+        let at = self.instant(at);
         self.raw.transition(new_state, at);
+    }
+
+    /// Whether adding this preparation delay can be represented without changing the clock.
+    pub fn can_shift_clock(&self, delay: Duration) -> bool {
+        self.clock_offset.checked_add(delay).is_some()
+    }
+
+    /// Defers this animation's time origin without changing duration, easing or generation.
+    /// Future transitions use the same translated clock and therefore gain no implicit delay.
+    /// Returns `false` on offset overflow without changing the animation.
+    pub fn shift_clock(&mut self, delay: Duration) -> bool {
+        let Some(offset) = self.clock_offset.checked_add(delay) else {
+            return false;
+        };
+        self.clock_offset = offset;
+        true
+    }
+
+    fn instant(&self, at: Instant) -> PreciseInstant {
+        PreciseInstant {
+            at,
+            offset: self.clock_offset,
+        }
     }
 
     /// Returns true if the [`Animation`] is currently in progress.
     ///
     /// An [`Animation`] is in progress when it is transitioning to a different state.
     pub fn is_animating(&self, at: Instant) -> bool {
-        self.raw.in_progress(at)
+        self.raw.in_progress(self.instant(at))
     }
 
     /// Projects the [`Animation`] into an interpolated value at the given [`Instant`]; using the
@@ -120,7 +163,7 @@ where
     where
         I: Interpolable,
     {
-        self.raw.animate(f, at)
+        self.raw.animate(f, self.instant(at))
     }
 
     /// Retuns the current state of the [`Animation`].
@@ -143,7 +186,7 @@ impl Animation<bool> {
     where
         I: Interpolable + Clone,
     {
-        self.raw.animate_bool(start, end, at)
+        self.raw.animate_bool(start, end, self.instant(at))
     }
 
     /// Returns the remaining [`Duration`] of the [`Animation`].

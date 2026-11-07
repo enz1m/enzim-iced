@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 pub use crate::Overlay;
 
 use crate::mouse;
@@ -106,5 +107,21 @@ where
 
     fn index(&self) -> f32 {
         self.content.index()
+    }
+
+    fn node(&self) -> Option<&crate::layout::Node> {
+        self.content.node()
+    }
+
+    fn area(&self) -> Option<crate::Rectangle> {
+        self.content.area()
+    }
+
+    fn anchor(&self) -> Option<crate::Rectangle> {
+        self.content.anchor()
+    }
+
+    fn grabs(&self) -> bool {
+        self.content.grabs()
     }
 }

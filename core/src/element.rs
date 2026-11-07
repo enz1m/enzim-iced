@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::layout;
 use crate::mouse;
 use crate::overlay;
@@ -292,6 +293,10 @@ where
         self.widget.size()
     }
 
+    fn frame_interest(&self, tree: &Tree) -> bool {
+        self.widget.frame_interest(tree)
+    }
+
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
         self.widget.layout(tree, renderer, limits);
     }
@@ -322,6 +327,32 @@ where
         let mut local_shell = shell.local(&mut local_messages);
 
         self.widget.update(
+            tree,
+            event,
+            layout,
+            cursor,
+            renderer,
+            &mut local_shell,
+            viewport,
+        );
+
+        shell.merge(local_shell, &self.mapper);
+    }
+
+    fn update_frame(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        shell: &mut Shell<'_, B>,
+        viewport: &Rectangle,
+    ) {
+        let mut local_messages = crate::shell::Bus::new();
+        let mut local_shell = shell.local(&mut local_messages);
+
+        self.widget.update_frame(
             tree,
             event,
             layout,
@@ -402,6 +433,10 @@ where
         self.element.widget.size()
     }
 
+    fn frame_interest(&self, tree: &Tree) -> bool {
+        self.element.widget.frame_interest(tree)
+    }
+
     fn tag(&self) -> tree::Tag {
         self.element.widget.tag()
     }
@@ -444,6 +479,21 @@ where
         self.element
             .widget
             .update(tree, event, layout, cursor, renderer, shell, viewport);
+    }
+
+    fn update_frame(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.element
+            .widget
+            .update_frame(tree, event, layout, cursor, renderer, shell, viewport);
     }
 
     fn draw(

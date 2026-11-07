@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Use the built-in theme and styles.
 pub mod palette;
 
@@ -5,6 +6,7 @@ pub use palette::Palette;
 
 use crate::Color;
 
+use std::any::Any;
 use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
@@ -102,6 +104,45 @@ impl Theme {
         Self::Custom(Arc::new(Custom::with_fn(name, palette, generate)))
     }
 
+    /// Attaches an opaque **extension payload** to a [`Custom`] theme.
+    ///
+    /// This is the enzICED fork's escape hatch for carrying a richer,
+    /// framework-specific theme (spacing / sizing / radius / motion scales,
+    /// or a fuller colour palette) alongside iced's own [`Palette`]. iced
+    /// itself never reads the payload; a downstream framework stashes its own
+    /// theme type here and recovers it at draw time via [`Theme::extension`].
+    ///
+    /// Only [`Theme::Custom`] themes can carry a payload; calling this on a
+    /// built-in variant is a no-op that returns the theme unchanged. The
+    /// payload does not participate in [`PartialEq`] (two themes are equal on
+    /// name/seed/palette regardless of extension) and is shown opaquely by
+    /// [`fmt::Debug`].
+    pub fn with_extension(self, extension: Arc<dyn Any + Send + Sync>) -> Self {
+        match self {
+            Self::Custom(custom) => {
+                let mut custom = Custom::clone(&custom);
+                custom.extension = Some(extension);
+                Self::Custom(Arc::new(custom))
+            }
+            other => other,
+        }
+    }
+
+    /// Recovers the extension payload attached via [`Theme::with_extension`],
+    /// downcast to `T`.
+    ///
+    /// Returns `None` for a built-in theme, a [`Custom`] theme with no
+    /// payload, or a payload whose concrete type is not `T`.
+    pub fn extension<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        match self {
+            Self::Custom(custom) => custom
+                .extension
+                .clone()
+                .and_then(|ext| ext.downcast::<T>().ok()),
+            _ => None,
+        }
+    }
+
     /// Returns the [`Palette`] of the [`Theme`].
     pub fn palette(&self) -> &palette::Palette {
         match self {
@@ -168,11 +209,41 @@ impl fmt::Display for Theme {
 }
 
 /// A [`Theme`] with a customized [`Palette`].
-#[derive(Debug, Clone, PartialEq)]
+///
+/// A `Custom` theme may also carry an opaque **extension payload** — an
+/// `Arc<dyn Any + Send + Sync>` attached via [`Theme::with_extension`] and
+/// recovered via [`Theme::extension`]. iced never reads it; it exists so a
+/// downstream framework can ferry its own richer theme (scales, a fuller
+/// palette) through `iced::Theme` without a parallel side-channel. The payload
+/// is excluded from [`PartialEq`] and shown opaquely by [`fmt::Debug`].
+#[derive(Clone)]
 pub struct Custom {
     name: Cow<'static, str>,
     seed: palette::Seed,
     palette: Palette,
+    extension: Option<Arc<dyn Any + Send + Sync>>,
+}
+
+impl fmt::Debug for Custom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Custom")
+            .field("name", &self.name)
+            .field("seed", &self.seed)
+            .field("palette", &self.palette)
+            .field("extension", &self.extension.as_ref().map(|_| "<opaque>"))
+            .finish()
+    }
+}
+
+// The extension payload is deliberately excluded from equality: two `Custom`
+// themes are equal when their name, seed and palette agree, regardless of any
+// opaque payload (which need not be `PartialEq`). Widgets use `Theme` equality
+// for change detection on the *visible* theme; the payload is derived from the
+// same source and never diverges independently.
+impl PartialEq for Custom {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.seed == other.seed && self.palette == other.palette
+    }
 }
 
 impl Custom {
@@ -192,6 +263,7 @@ impl Custom {
             name: name.into(),
             seed,
             palette: generate(seed),
+            extension: None,
         }
     }
 }
@@ -241,6 +313,13 @@ pub trait Base {
     /// debugging purposes; like displaying performance metrics or devtools.
     fn seed(&self) -> Option<palette::Seed>;
 
+    /// Returns the resolved colors when the theme exposes a full palette.
+    ///
+    /// The default is `None`; widgets can still compare the seed and base style.
+    fn palette(&self) -> Option<palette::Palette> {
+        None
+    }
+
     /// Returns the unique name of the theme.
     ///
     /// This name may be used to efficiently detect theme
@@ -288,6 +367,10 @@ impl Base for Theme {
 
     fn seed(&self) -> Option<palette::Seed> {
         Some(self.seed())
+    }
+
+    fn palette(&self) -> Option<palette::Palette> {
+        Some(*self.palette())
     }
 
     fn name(&self) -> &str {

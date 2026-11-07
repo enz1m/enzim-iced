@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::{Point, Rectangle, Size, Vector};
 
 use glam::{Mat4, Vec3, Vec4};
@@ -29,6 +30,11 @@ impl Transformation {
     /// Creates a uniform scaling transformation.
     pub fn scale(scaling: f32) -> Self {
         Self(Mat4::from_scale(Vec3::new(scaling, scaling, 1.0)))
+    }
+
+    /// Creates a rotation by `radians`, clockwise on screen (y points down).
+    pub fn rotate(radians: f32) -> Self {
+        Self(Mat4::from_rotation_z(radians))
     }
 
     /// Returns the inverse of the [`Transformation`].

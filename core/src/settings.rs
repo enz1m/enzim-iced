@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Configure your application.
 use crate::backend;
 use crate::renderer;
@@ -30,7 +31,7 @@ pub struct Settings {
 
     /// The default line height of text.
     ///
-    /// By default, it is `LineHeight::Relative(1.375)`.
+    /// By default, it is `LineHeight::Relative(1.3)`.
     pub line_height: text::LineHeight,
 
     /// Whether certain widgets should be rendered using metrics hinting.

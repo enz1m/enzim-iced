@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Load and draw raster graphics.
 use crate::border;
 use crate::{Bytes, Radians, Rectangle, Size};
@@ -301,6 +302,21 @@ pub trait Renderer: crate::Renderer {
     ///
     /// If you need a measurement right away, consider using [`Renderer::load_image`].
     fn measure_image(&self, handle: &Self::Handle) -> Option<Size<u32>>;
+
+    /// Binds declared native allocation paint when supported; ordinary drawing is unchanged.
+    fn draw_layout_image(
+        &mut self,
+        node: Option<crate::renderer::NodeId>,
+        image: Image<Self::Handle>,
+        bounds: Rectangle,
+        clip_bounds: Rectangle,
+        _scale: f32,
+    ) {
+        if let Some(node) = node {
+            self.reject_layout_paint(node);
+        }
+        self.draw_image(image, bounds, clip_bounds);
+    }
 
     /// Draws an [`Image`] inside the provided `bounds`.
     ///

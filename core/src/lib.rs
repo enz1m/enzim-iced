@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! The core library of [Iced].
 //!
 //! This library holds basic types that can be reused and re-exported in
@@ -13,21 +14,26 @@ pub mod alignment;
 pub mod animation;
 pub mod backend;
 pub mod border;
+pub mod clip_shape;
 pub mod clipboard;
 pub mod color;
 pub mod event;
 pub mod font;
+pub mod gesture;
 pub mod gradient;
 pub mod image;
 pub mod input_method;
 pub mod keyboard;
 pub mod layout;
 pub mod length;
+pub mod material;
 pub mod mouse;
 pub mod overlay;
 pub mod padding;
+pub mod preferences;
 pub mod renderer;
 pub mod shell;
+pub mod stylus;
 pub mod svg;
 pub mod text;
 pub mod theme;

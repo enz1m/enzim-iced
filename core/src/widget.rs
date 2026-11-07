@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Create custom widgets and operate on them.
 pub mod operation;
 pub mod text;
@@ -78,6 +79,15 @@ where
         tree.children.clear();
     }
 
+    /// Returns whether this widget or one of its descendants needs presented-frame events.
+    ///
+    /// The conservative default keeps custom widgets correct until they explicitly opt in
+    /// to targeted frame routing. Static widgets should return `false`; containers should
+    /// aggregate [`Tree::has_frame_interest`] from their children.
+    fn frame_interest(&self, _tree: &Tree) -> bool {
+        true
+    }
+
     /// Applies an [`Operation`] to the [`Widget`].
     fn operate(
         &mut self,
@@ -102,6 +112,23 @@ where
         _shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
+    }
+
+    /// Processes a presented-frame [`Event`] after the runtime has selected this path.
+    ///
+    /// The conservative default delegates to [`Widget::update`]. Containers that aggregate
+    /// explicit frame interest should override this method and visit only interested children.
+    fn update_frame(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.update(tree, event, layout, cursor, renderer, shell, viewport);
     }
 
     /// Returns the current [`mouse::Interaction`] of the [`Widget`].
@@ -163,6 +190,10 @@ where
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
+    }
+
+    fn frame_interest(&self, _tree: &Tree) -> bool {
+        false
     }
 
     fn is_void(&self) -> bool {

@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Query or update internal widget state.
 pub mod focusable;
 pub mod scrollable;
@@ -8,11 +9,61 @@ pub use scrollable::Scrollable;
 pub use text_input::TextInput;
 
 use crate::widget::Id;
-use crate::{Rectangle, Size, Vector};
+use crate::{Point, Rectangle, Size, Vector};
 
 use std::any::Any;
 use std::fmt;
+use std::ops::Range;
 use std::sync::Arc;
+
+/// A widget-owned clock group for an explicitly declared docked travel.
+/// Validation must be side-effect free. A refused shift must leave every clock unchanged.
+pub trait DockedClock {
+    /// Whether every requested node/generation belongs to this one clock group.
+    fn owns_animations(&self, animations: &[crate::renderer::TrackAnimation]) -> bool;
+    /// Whether the entire group's clock and cached frame instants can be shifted atomically.
+    fn can_shift(&self, delay: crate::time::Duration) -> bool;
+    /// Applies a previously validated shift without layout, highlighting or application actions.
+    fn shift(&mut self, delay: crate::time::Duration) -> bool;
+}
+
+/// Renderer-owned shaped text geometry exposed during widget operations.
+///
+/// This deliberately carries behavior rather than font metrics: consumers can
+/// hit-test and obtain exact glyph rectangles without knowing the renderer's
+/// concrete paragraph type.
+pub trait SelectableTextLayout {
+    /// Hit-test a paragraph-local point, returning a source byte offset.
+    fn hit_test(&self, point: Point) -> Option<usize>;
+
+    /// Return paragraph-local rectangles for glyphs overlapping `range`, whose
+    /// endpoints are source byte offsets.
+    fn range_bounds(&self, range: Range<usize>) -> Vec<Rectangle>;
+
+    /// Return every grapheme's bounds from one walk of the layout, or `None`
+    /// when unavailable. See [`crate::text::Paragraph::grapheme_bounds`].
+    fn grapheme_bounds(&self) -> Option<Vec<crate::text::paragraph::GraphemeBounds>> {
+        None
+    }
+}
+
+impl<P: crate::text::Paragraph> SelectableTextLayout for P {
+    fn hit_test(&self, point: Point) -> Option<usize> {
+        // Route through the global source-offset API (#1816): renderers with
+        // hard-line storage override this to add preceding line + line-ending
+        // bytes, so a hit on any line after the first resolves to the correct
+        // document offset instead of a line-local one.
+        crate::text::Paragraph::hit_test_source_offset(self, point)
+    }
+
+    fn range_bounds(&self, range: Range<usize>) -> Vec<Rectangle> {
+        crate::text::Paragraph::range_bounds(self, range)
+    }
+
+    fn grapheme_bounds(&self) -> Option<Vec<crate::text::paragraph::GraphemeBounds>> {
+        crate::text::Paragraph::grapheme_bounds(self)
+    }
+}
 
 /// A piece of logic that can traverse the widget tree of an application in
 /// order to query or update some widget state.
@@ -24,6 +75,38 @@ pub trait Operation<T = ()>: Send {
     /// the closure is not called, the children of the widget asking for
     /// traversal will be skipped.
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<T>));
+
+    /// Whether this pass exclusively reconciles displayed geometry without user actions.
+    fn is_native_reconciliation(&self) -> bool {
+        false
+    }
+
+    /// Whether this pass only synchronizes a declared docked animation clock.
+    fn is_docked_clock_rebase(&self) -> bool {
+        false
+    }
+
+    /// Visits a clock group without invoking widget layout or user actions.
+    fn docked_clock(&mut self, _clock: &mut dyn DockedClock) {}
+
+    /// Reports that the exact captured layout domain was projected before native reconciliation.
+    fn projection_applied(&mut self, _root: crate::renderer::NodeId) {}
+
+    /// Selects an editor by its exact retained allocation identity, not by equal bounds.
+    fn needs_editor_reconciliation(&self, _node: crate::renderer::NodeId) -> bool {
+        false
+    }
+
+    /// Reports success or refusal for one requested native editor; missing reports must refuse.
+    fn editor_reconciled(&mut self, _node: crate::renderer::NodeId, _success: bool) {}
+
+    /// Selects a scroll owner by its exact retained allocation identity.
+    fn needs_scroll_reconciliation(&self, _node: crate::renderer::NodeId) -> bool {
+        false
+    }
+
+    /// Reports one native scroll validation; missing or duplicate reports must refuse input.
+    fn scroll_reconciled(&mut self, _node: crate::renderer::NodeId, _success: bool) {}
 
     /// Operates on a widget that contains other widgets.
     fn container(&mut self, _id: Option<&Id>, _bounds: Rectangle, _viewport: &Rectangle) {}
@@ -48,6 +131,21 @@ pub trait Operation<T = ()>: Send {
     /// Operates on a widget that contains some text.
     fn text(&mut self, _id: Option<&Id>, _bounds: Rectangle, _text: &str) {}
 
+    /// Operates on text together with the renderer's shaped geometry.
+    ///
+    /// The default preserves compatibility by forwarding to [`Self::text`].
+    /// Selection-aware operations override this to consume exact hit testing
+    /// and range rectangles.
+    fn selectable_text(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        text: &str,
+        _layout: &dyn SelectableTextLayout,
+    ) {
+        self.text(id, bounds, text);
+    }
+
     /// Operates on a custom widget with some state.
     fn custom(&mut self, _id: Option<&Id>, _bounds: Rectangle, _state: &mut dyn Any) {}
 
@@ -63,6 +161,36 @@ where
 {
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<O>)) {
         self.as_mut().traverse(operate);
+    }
+
+    fn is_native_reconciliation(&self) -> bool {
+        self.as_ref().is_native_reconciliation()
+    }
+    fn is_docked_clock_rebase(&self) -> bool {
+        self.as_ref().is_docked_clock_rebase()
+    }
+    fn docked_clock(&mut self, clock: &mut dyn DockedClock) {
+        self.as_mut().docked_clock(clock);
+    }
+
+    fn projection_applied(&mut self, root: crate::renderer::NodeId) {
+        self.as_mut().projection_applied(root);
+    }
+
+    fn needs_editor_reconciliation(&self, node: crate::renderer::NodeId) -> bool {
+        self.as_ref().needs_editor_reconciliation(node)
+    }
+
+    fn editor_reconciled(&mut self, node: crate::renderer::NodeId, success: bool) {
+        self.as_mut().editor_reconciled(node, success);
+    }
+
+    fn needs_scroll_reconciliation(&self, node: crate::renderer::NodeId) -> bool {
+        self.as_ref().needs_scroll_reconciliation(node)
+    }
+
+    fn scroll_reconciled(&mut self, node: crate::renderer::NodeId, success: bool) {
+        self.as_mut().scroll_reconciled(node, success);
     }
 
     fn container(&mut self, id: Option<&Id>, bounds: Rectangle, viewport: &Rectangle) {
@@ -91,6 +219,16 @@ where
 
     fn text(&mut self, id: Option<&Id>, bounds: Rectangle, text: &str) {
         self.as_mut().text(id, bounds, text);
+    }
+
+    fn selectable_text(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        text: &str,
+        layout: &dyn SelectableTextLayout,
+    ) {
+        self.as_mut().selectable_text(id, bounds, text, layout);
     }
 
     fn custom(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Any) {
@@ -165,6 +303,32 @@ where
             });
         }
 
+        fn is_native_reconciliation(&self) -> bool {
+            self.operation.is_native_reconciliation()
+        }
+        fn is_docked_clock_rebase(&self) -> bool {
+            self.operation.is_docked_clock_rebase()
+        }
+        fn docked_clock(&mut self, clock: &mut dyn DockedClock) {
+            self.operation.docked_clock(clock);
+        }
+        fn projection_applied(&mut self, root: crate::renderer::NodeId) {
+            self.operation.projection_applied(root);
+        }
+        fn needs_editor_reconciliation(&self, node: crate::renderer::NodeId) -> bool {
+            self.operation.needs_editor_reconciliation(node)
+        }
+        fn editor_reconciled(&mut self, node: crate::renderer::NodeId, success: bool) {
+            self.operation.editor_reconciled(node, success);
+        }
+
+        fn needs_scroll_reconciliation(&self, node: crate::renderer::NodeId) -> bool {
+            self.operation.needs_scroll_reconciliation(node)
+        }
+        fn scroll_reconciled(&mut self, node: crate::renderer::NodeId, success: bool) {
+            self.operation.scroll_reconciled(node, success);
+        }
+
         fn container(&mut self, id: Option<&Id>, bounds: Rectangle, viewport: &Rectangle) {
             self.operation.container(id, bounds, viewport);
         }
@@ -237,6 +401,32 @@ where
                     });
                 }
 
+                fn is_native_reconciliation(&self) -> bool {
+                    self.operation.is_native_reconciliation()
+                }
+                fn is_docked_clock_rebase(&self) -> bool {
+                    self.operation.is_docked_clock_rebase()
+                }
+                fn docked_clock(&mut self, clock: &mut dyn DockedClock) {
+                    self.operation.docked_clock(clock);
+                }
+                fn projection_applied(&mut self, root: crate::renderer::NodeId) {
+                    self.operation.projection_applied(root);
+                }
+                fn needs_editor_reconciliation(&self, node: crate::renderer::NodeId) -> bool {
+                    self.operation.needs_editor_reconciliation(node)
+                }
+                fn editor_reconciled(&mut self, node: crate::renderer::NodeId, success: bool) {
+                    self.operation.editor_reconciled(node, success);
+                }
+
+                fn needs_scroll_reconciliation(&self, node: crate::renderer::NodeId) -> bool {
+                    self.operation.needs_scroll_reconciliation(node)
+                }
+                fn scroll_reconciled(&mut self, node: crate::renderer::NodeId, success: bool) {
+                    self.operation.scroll_reconciled(node, success);
+                }
+
                 fn container(&mut self, id: Option<&Id>, bounds: Rectangle, viewport: &Rectangle) {
                     let Self { operation, .. } = self;
 
@@ -285,6 +475,32 @@ where
             self.operation.traverse(&mut |operation| {
                 operate(&mut MapRef { operation });
             });
+        }
+
+        fn is_native_reconciliation(&self) -> bool {
+            self.operation.is_native_reconciliation()
+        }
+        fn is_docked_clock_rebase(&self) -> bool {
+            self.operation.is_docked_clock_rebase()
+        }
+        fn docked_clock(&mut self, clock: &mut dyn DockedClock) {
+            self.operation.docked_clock(clock);
+        }
+        fn projection_applied(&mut self, root: crate::renderer::NodeId) {
+            self.operation.projection_applied(root);
+        }
+        fn needs_editor_reconciliation(&self, node: crate::renderer::NodeId) -> bool {
+            self.operation.needs_editor_reconciliation(node)
+        }
+        fn editor_reconciled(&mut self, node: crate::renderer::NodeId, success: bool) {
+            self.operation.editor_reconciled(node, success);
+        }
+
+        fn needs_scroll_reconciliation(&self, node: crate::renderer::NodeId) -> bool {
+            self.operation.needs_scroll_reconciliation(node)
+        }
+        fn scroll_reconciled(&mut self, node: crate::renderer::NodeId, success: bool) {
+            self.operation.scroll_reconciled(node, success);
         }
 
         fn container(&mut self, id: Option<&Id>, bounds: Rectangle, viewport: &Rectangle) {
@@ -364,6 +580,32 @@ where
             self.operation.traverse(&mut |operation| {
                 operate(&mut black_box(operation));
             });
+        }
+
+        fn is_native_reconciliation(&self) -> bool {
+            self.operation.is_native_reconciliation()
+        }
+        fn is_docked_clock_rebase(&self) -> bool {
+            self.operation.is_docked_clock_rebase()
+        }
+        fn docked_clock(&mut self, clock: &mut dyn DockedClock) {
+            self.operation.docked_clock(clock);
+        }
+        fn projection_applied(&mut self, root: crate::renderer::NodeId) {
+            self.operation.projection_applied(root);
+        }
+        fn needs_editor_reconciliation(&self, node: crate::renderer::NodeId) -> bool {
+            self.operation.needs_editor_reconciliation(node)
+        }
+        fn editor_reconciled(&mut self, node: crate::renderer::NodeId, success: bool) {
+            self.operation.editor_reconciled(node, success);
+        }
+
+        fn needs_scroll_reconciliation(&self, node: crate::renderer::NodeId) -> bool {
+            self.operation.needs_scroll_reconciliation(node)
+        }
+        fn scroll_reconciled(&mut self, node: crate::renderer::NodeId, success: bool) {
+            self.operation.scroll_reconciled(node, success);
         }
 
         fn container(&mut self, id: Option<&Id>, bounds: Rectangle, viewport: &Rectangle) {

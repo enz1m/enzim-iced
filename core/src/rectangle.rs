@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::alignment;
 use crate::{Padding, Point, Radians, Size, Vector};
 
@@ -196,8 +197,18 @@ impl Rectangle<f32> {
         let x = self.x.max(other.x);
         let y = self.y.max(other.y);
 
-        let lower_right_x = (self.x + self.width).min(other.x + other.width);
-        let lower_right_y = (self.y + self.height).min(other.y + other.height);
+        // An infinite extent reaches `+inf` whatever its origin; summing
+        // `NEG_INFINITY + INFINITY` would be NaN, so `INFINITE` would not
+        // intersect itself.
+        let far = |origin: f32, extent: f32| {
+            if extent == f32::INFINITY {
+                f32::INFINITY
+            } else {
+                origin + extent
+            }
+        };
+        let lower_right_x = far(self.x, self.width).min(far(other.x, other.width));
+        let lower_right_y = far(self.y, self.height).min(far(other.y, other.height));
 
         let width = lower_right_x - x;
         let height = lower_right_y - y;
@@ -356,10 +367,25 @@ impl Rectangle<f32> {
         let angle = angle.into().0 - FRAC_PI_2;
         let r = Vector::new(f32::cos(angle), f32::sin(angle));
 
-        let distance_to_rect = f32::max(
-            f32::abs(r.x * self.width / 2.0),
-            f32::abs(r.y * self.height / 2.0),
-        );
+        // enzICED #536.2: SUM of the projected half-axes, not `max`.
+        //
+        // `chord` returns the endpoints of the gradient line for direction
+        // `r`. For an axis-aligned rectangle the distance from the centre to
+        // the supporting plane in direction `r` is the support function
+        //
+        //     |r.x| * w/2 + |r.y| * h/2
+        //
+        // i.e. the *sum* of the two projected half-axes. `max` is correct
+        // only when one term is zero -- an axis-aligned direction (0/90/180/
+        // 270 degrees), where `max` and the sum coincide (exactly at 90
+        // degrees; to within the trig rounding of the near-zero cos/sin at
+        // the others). For any diagonal direction `max` under-spans: the
+        // endpoints fall short of
+        // the far corners, so renderers pad those corners with the endpoint
+        // colours and a 45-degree gradient on a square flattens into solid
+        // bands at two corners. The sum makes every corner project onto the
+        // returned segment within [0, 1] at every angle.
+        let distance_to_rect = f32::abs(r.x * self.width / 2.0) + f32::abs(r.y * self.height / 2.0);
 
         let center = self.center();
         let start = center - r * distance_to_rect;
@@ -462,5 +488,206 @@ where
     fn sub_assign(&mut self, translation: Vector<T>) {
         self.x -= translation.x;
         self.y -= translation.y;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn rect(w: f32, h: f32) -> Rectangle<f32> {
+        // Centre at (10, 20) to exercise the non-origin case.
+        Rectangle {
+            x: 10.0 - w / 2.0,
+            y: 20.0 - h / 2.0,
+            width: w,
+            height: h,
+        }
+    }
+
+    /// The old implementation, kept verbatim so the axis-aligned agreement
+    /// claim is a *test* and not a comment.
+    ///
+    /// In *exact* arithmetic, at 0/90/180/270 degrees one of the two
+    /// projected half-axes is zero, so `max` and the sum coincide. In `f32`
+    /// the trig calls do not return exact zeros: `cos(-PI/2)` is `-4.37e-8`,
+    /// not `0`, so at 0/180/270 degrees the sum adds a sub-micron term the
+    /// `max` dropped (measured maximum discrepancy over these four angles on
+    /// an 80x40 rect: 3.8e-6 px). 90 degrees is the one angle where the
+    /// zeroed term (`sin(0)`) is *exactly* zero, so there the two agree
+    /// byte-for-byte. Both facts are asserted below.
+    fn chord_max(bounds: &Rectangle<f32>, angle: f32) -> (Point, Point) {
+        let a = angle - std::f32::consts::FRAC_PI_2;
+        let r = Vector::new(f32::cos(a), f32::sin(a));
+        let distance_to_rect = f32::max(
+            f32::abs(r.x * bounds.width / 2.0),
+            f32::abs(r.y * bounds.height / 2.0),
+        );
+        let center = bounds.center();
+        (center - r * distance_to_rect, center + r * distance_to_rect)
+    }
+
+    #[test]
+    fn axis_aligned_angles_agree_with_the_max_formula() {
+        // Both a square and a non-square rectangle. At axis-aligned angles
+        // one projected half-axis is zero *in exact arithmetic*, so `max`
+        // and the sum coincide; in `f32` they differ only by the trig
+        // rounding error, which must stay well under a pixel.
+        for bounds in [rect(100.0, 100.0), rect(80.0, 40.0)] {
+            for angle in [
+                0.0,
+                std::f32::consts::FRAC_PI_2,
+                PI,
+                3.0 * std::f32::consts::FRAC_PI_2,
+            ] {
+                let (s_new, e_new) = bounds.chord(Radians(angle));
+                let (s_old, e_old) = chord_max(&bounds, angle);
+                // Sub-pixel: the only difference is the |cos/sin| ~= 1e-7
+                // residual times the half-axis, ~= 4e-6 px at most here.
+                let tol = 1e-4;
+                assert!(
+                    (s_new.x - s_old.x).abs() < tol
+                        && (s_new.y - s_old.y).abs() < tol
+                        && (e_new.x - e_old.x).abs() < tol
+                        && (e_new.y - e_old.y).abs() < tol,
+                    "axis-aligned endpoints moved by more than {tol} at angle \
+                     {angle}: new=({s_new:?},{e_new:?}) old=({s_old:?},{e_old:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ninety_degrees_is_byte_identical_to_the_max_formula() {
+        // 90 degrees is the one axis-aligned angle whose zeroed term
+        // (`sin(0)`) is *exactly* zero in f32, so `max` and the sum are
+        // bit-for-bit identical. This pins the strongest form of the
+        // "axis-aligned cases do not move" guarantee where it is achievable.
+        for bounds in [rect(100.0, 100.0), rect(80.0, 40.0)] {
+            let angle = std::f32::consts::FRAC_PI_2;
+            let (s_new, e_new) = bounds.chord(Radians(angle));
+            let (s_old, e_old) = chord_max(&bounds, angle);
+            assert_eq!(s_new.x.to_bits(), s_old.x.to_bits(), "start.x moved");
+            assert_eq!(s_new.y.to_bits(), s_old.y.to_bits(), "start.y moved");
+            assert_eq!(e_new.x.to_bits(), e_old.x.to_bits(), "end.x moved");
+            assert_eq!(e_new.y.to_bits(), e_old.y.to_bits(), "end.y moved");
+        }
+    }
+
+    /// Project point `p` onto the segment `(start, end)` and return the
+    /// parameter t such that p_proj = start + t * (end - start). For every
+    /// corner of the rectangle t must lie in [0, 1], i.e. the corner's
+    /// gradient coordinate is between the two endpoint colours -- no corner
+    /// is left outside the span to be padded with an endpoint colour.
+    fn project_t(start: Point, end: Point, p: Point) -> f32 {
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        let len2 = dx * dx + dy * dy;
+        ((p.x - start.x) * dx + (p.y - start.y) * dy) / len2
+    }
+
+    #[test]
+    fn every_corner_projects_within_the_segment_at_all_angles() {
+        // The property that "remove the class" demands: at *every* angle,
+        // every corner projects into [0, 1]. `max` fails this for diagonals.
+        for bounds in [rect(100.0, 100.0), rect(120.0, 40.0), rect(40.0, 120.0)] {
+            let corners = [
+                Point::new(bounds.x, bounds.y),
+                Point::new(bounds.x + bounds.width, bounds.y),
+                Point::new(bounds.x, bounds.y + bounds.height),
+                Point::new(bounds.x + bounds.width, bounds.y + bounds.height),
+            ];
+            // Sweep a full turn in 5-degree steps.
+            for step in 0..72 {
+                let angle = step as f32 * (PI / 36.0);
+                let (start, end) = bounds.chord(Radians(angle));
+                for corner in corners {
+                    let t = project_t(start, end, corner);
+                    assert!(
+                        (-1e-4..=1.0 + 1e-4).contains(&t),
+                        "corner {corner:?} projects to t={t} (out of [0,1]) at angle {angle} for {bounds:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn diagonal_gradient_spans_the_full_square() {
+        // 45 degrees on a square: the endpoints must reach the opposite
+        // corners. With `max` the half-length is max(|rx|*50,|ry|*50) =
+        // 0.707*50 ~= 35.4, so the chord stops short and the far corners
+        // project to t > 1. The sum formula gives |rx|*50 + |ry|*50 =
+        // 0.707*50 + 0.707*50 ~= 70.71 half-length -- exactly the
+        // centre-to-corner distance -- so the two far corners sit at
+        // t = 0 and t = 1.
+        let bounds = rect(100.0, 100.0);
+        let angle = std::f32::consts::FRAC_PI_4; // 45 degrees
+        let (start, end) = bounds.chord(Radians(angle));
+
+        // The far corners of a 45-degree chord are top-left and
+        // bottom-right (or the other pair depending on sign); at least two
+        // corners must land at the endpoints (t ~= 0 and t ~= 1).
+        let corners = [
+            Point::new(bounds.x, bounds.y),
+            Point::new(bounds.x + bounds.width, bounds.y),
+            Point::new(bounds.x, bounds.y + bounds.height),
+            Point::new(bounds.x + bounds.width, bounds.y + bounds.height),
+        ];
+        let ts: Vec<f32> = corners.iter().map(|c| project_t(start, end, *c)).collect();
+        let min_t = ts.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_t = ts.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            min_t <= 1e-4,
+            "no corner reaches the start endpoint: min t = {min_t}, ts = {ts:?}"
+        );
+        assert!(
+            (max_t - 1.0).abs() <= 1e-4,
+            "no corner reaches the end endpoint: max t = {max_t}, ts = {ts:?}"
+        );
+
+        // The chord spans corner to corner: full length sqrt(2)*100.
+        let len = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
+        let expected = std::f32::consts::SQRT_2 * 100.0;
+        assert!(
+            (len - expected).abs() <= 1e-3,
+            "diagonal chord length = {len}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn zero_dimension_does_not_produce_nan() {
+        // Zero width/height is expressible intent (a degenerate rectangle)
+        // and must degrade cleanly, never to NaN.
+        for bounds in [rect(0.0, 100.0), rect(100.0, 0.0), rect(0.0, 0.0)] {
+            for step in 0..8 {
+                let angle = step as f32 * (PI / 4.0);
+                let (start, end) = bounds.chord(Radians(angle));
+                assert!(
+                    start.x.is_finite()
+                        && start.y.is_finite()
+                        && end.x.is_finite()
+                        && end.y.is_finite(),
+                    "non-finite endpoint at angle {angle} for {bounds:?}: {start:?} {end:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn infinite_bounds_intersect_as_the_other_operand() {
+        let infinite = Rectangle::INFINITE;
+        assert_eq!(infinite.intersection(&infinite), Some(infinite));
+
+        let finite = Rectangle::new(Point::new(-12.0, 30.0), Size::new(50.0, 40.0));
+        assert_eq!(infinite.intersection(&finite), Some(finite));
+        assert_eq!(finite.intersection(&infinite), Some(finite));
+
+        let travelled = infinite + Vector::new(-12.0, 30.0);
+        assert_eq!(travelled.intersection(&infinite), Some(infinite));
+
+        let apart = Rectangle::new(Point::new(100.0, 100.0), Size::new(10.0, 10.0));
+        assert_eq!(finite.intersection(&apart), None);
     }
 }
