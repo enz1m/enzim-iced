@@ -20,5 +20,8 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
 
 @fragment
 fn solid_fs_main(input: SolidVertexOutput) -> @location(0) vec4<f32> {
-    return input.color;
+    // enzICED #41 stage 3: apply the layer's rounded clip (no-op when unset).
+    // `input.color` is already premultiplied, so scaling the whole vec4 by the
+    // coverage keeps it premultiplied.
+    return input.color * rounded_clip_coverage_of_layer(input.position.xy);
 }

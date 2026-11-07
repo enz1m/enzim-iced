@@ -93,7 +93,7 @@ fn random(coords: vec2<f32>) -> f32 {
 fn gradient(
     raw_position: vec2<f32>,
     direction: vec4<f32>,
-    colors: array<vec4<f32>, 8>,
+    colors: array<vec2<u32>, 8>,
     offsets: array<f32, 8>,
     last_index: i32
 ) -> vec4<f32> {
@@ -104,53 +104,77 @@ fn gradient(
     let v2 = raw_position - start;
     let coord_offset = dot(v1, v2) / dot(v1, v1);
 
-    //need to store these as a var to use dynamic indexing in a loop
-    //this is already added to wgsl spec but not in wgpu yet
-    var colors_arr = colors;
-    var offsets_arr = offsets;
-
     let noise_granularity: f32 = 0.3/255.0;
     let noise = mix(-noise_granularity, noise_granularity, random(raw_position));
 
-    if (coord_offset <= offsets_arr[0]) {
-        return colors_arr[0] + noise;
+    return stop_color(coord_offset, colors, offsets, last_index) + noise;
+}
+
+// The colour at `t` along stops sorted by offset, of which the first
+// `last_index + 1` are used. Each pixel evaluates only the segment `t` falls
+// in, unpacking just its two colours, with constant indices throughout:
+// indexing a local array at run time puts it in scratch memory on some GPUs
+// (Intel among them), and evaluating every segment for every pixel made a
+// full-screen gradient cost several times a textured quad. Neighbouring
+// pixels fall in the same segment, so the branches stay coherent.
+fn stop_color(
+    t: f32,
+    colors: array<vec2<u32>, 8>,
+    offsets: array<f32, 8>,
+    last_index: i32
+) -> vec4<f32> {
+    if (last_index < 1 || t <= offsets[0]) {
+        return unpack_color(colors[0]);
     }
-
-    if (coord_offset >= offsets_arr[last_index]) {
-        return colors_arr[last_index] + noise;
+    if (last_index < 2 || t <= offsets[1]) {
+        return segment(colors[0], colors[1], offsets[0], offsets[1], t);
     }
-
-    for (var i: i32 = 0; i < last_index; i++) {
-        let curr_offset = offsets_arr[i];
-        let next_offset = offsets_arr[i + 1];
-
-        if (coord_offset <= next_offset) {
-            let factor = smoothstep(curr_offset, next_offset, coord_offset);
-
-            return interpolate_color(colors_arr[i], colors_arr[i + 1], factor) + noise;
-        }
+    if (last_index < 3 || t <= offsets[2]) {
+        return segment(colors[1], colors[2], offsets[1], offsets[2], t);
     }
+    if (last_index < 4 || t <= offsets[3]) {
+        return segment(colors[2], colors[3], offsets[2], offsets[3], t);
+    }
+    if (last_index < 5 || t <= offsets[4]) {
+        return segment(colors[3], colors[4], offsets[3], offsets[4], t);
+    }
+    if (last_index < 6 || t <= offsets[5]) {
+        return segment(colors[4], colors[5], offsets[4], offsets[5], t);
+    }
+    if (last_index < 7 || t <= offsets[6]) {
+        return segment(colors[5], colors[6], offsets[5], offsets[6], t);
+    }
+    return segment(colors[6], colors[7], offsets[6], offsets[7], t);
+}
 
-    return colors_arr[last_index] + noise;
+// One segment, linearly (enzICED #78.1: not `smoothstep`, whose flat ends
+// put a visible flat spot at every stop). `saturate` clamps the factor and
+// guards a zero-width segment (a hard stop), where the division is 0/0.
+fn segment(from_: vec2<u32>, to_: vec2<u32>, start: f32, end: f32, t: f32) -> vec4<f32> {
+    return interpolate_color(
+        unpack_color(from_),
+        unpack_color(to_),
+        saturate((t - start) / (end - start)),
+    );
 }
 
 @fragment
 fn gradient_fs_main(input: GradientVertexOutput) -> @location(0) vec4<f32> {
-    let colors = array<vec4<f32>, 8>(
-        unpack_color(input.colors_1.xy),
-        unpack_color(input.colors_1.zw),
-        unpack_color(input.colors_2.xy),
-        unpack_color(input.colors_2.zw),
-        unpack_color(input.colors_3.xy),
-        unpack_color(input.colors_3.zw),
-        unpack_color(input.colors_4.xy),
-        unpack_color(input.colors_4.zw),
+    let colors = array<vec2<u32>, 8>(
+        input.colors_1.xy,
+        input.colors_1.zw,
+        input.colors_2.xy,
+        input.colors_2.zw,
+        input.colors_3.xy,
+        input.colors_3.zw,
+        input.colors_4.xy,
+        input.colors_4.zw,
     );
 
     let offsets_1: vec4<f32> = unpack_u32(input.offsets.xy);
     let offsets_2: vec4<f32> = unpack_u32(input.offsets.zw);
 
-    var offsets = array<f32, 8>(
+    let offsets = array<f32, 8>(
         offsets_1.x,
         offsets_1.y,
         offsets_1.z,
@@ -161,14 +185,10 @@ fn gradient_fs_main(input: GradientVertexOutput) -> @location(0) vec4<f32> {
         offsets_2.w,
     );
 
-    //TODO could just pass this in to the shader but is probably more performant to just check it here
-    var last_index = 7;
-    for (var i: i32 = 0; i <= 7; i++) {
-        if (offsets[i] > 1.0) {
-            last_index = i - 1;
-            break;
-        }
-    }
+    // Unused stops carry an offset past 1; the used ones come first.
+    let last_index = i32(offsets[1] <= 1.0) + i32(offsets[2] <= 1.0) + i32(offsets[3] <= 1.0)
+        + i32(offsets[4] <= 1.0) + i32(offsets[5] <= 1.0) + i32(offsets[6] <= 1.0)
+        + i32(offsets[7] <= 1.0);
 
     var mixed_color: vec4<f32> = gradient(input.position.xy, input.direction, colors, offsets, last_index);
 
@@ -189,6 +209,9 @@ fn gradient_fs_main(input: GradientVertexOutput) -> @location(0) vec4<f32> {
     var quad_alpha: f32 = clamp(0.5 - dist, 0.0, 1.0);
     let quad_color = mixed_color * quad_alpha;
 
+    // enzICED #41 stage 2: apply the layer's rounded clip (no-op when unset).
+    let clip = rounded_clip_coverage_of_layer(input.position.xy);
+
     if input.shadow_color.a > 0.0 {
         return mix_shadow(
             quad_color,
@@ -200,8 +223,8 @@ fn gradient_fs_main(input: GradientVertexOutput) -> @location(0) vec4<f32> {
             input.shadow_color,
             input.shadow_offset,
             input.shadow_blur_radius
-        );
+        ) * clip;
     }
 
-    return quad_color;
+    return quad_color * clip;
 }

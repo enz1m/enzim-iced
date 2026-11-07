@@ -88,6 +88,9 @@ fn solid_fs_main(
 
     let quad_color = mixed_color * quad_alpha;
 
+    // enzICED #41 stage 2: apply the layer's rounded clip (no-op when unset).
+    let clip = rounded_clip_coverage_of_layer(input.position.xy);
+
     if input.shadow_color.a > 0.0 {
         return mix_shadow(
             quad_color,
@@ -99,8 +102,8 @@ fn solid_fs_main(
             input.shadow_color,
             input.shadow_offset,
             input.shadow_blur_radius
-        );
+        ) * clip;
     }
 
-    return quad_color;
+    return quad_color * clip;
 }
