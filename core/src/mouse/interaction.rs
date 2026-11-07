@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 /// The interaction of a mouse cursor.
 #[derive(Debug, Eq, PartialEq, Clone, Copy, PartialOrd, Ord, Default)]
 #[allow(missing_docs)]
@@ -30,4 +31,6 @@ pub enum Interaction {
     AllScroll,
     ZoomIn,
     ZoomOut,
+    /// A cursor drawn from an image (enzICED).
+    Custom(super::CustomCursor),
 }

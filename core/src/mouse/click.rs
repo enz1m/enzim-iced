@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Track mouse clicks.
 use crate::mouse::Button;
 use crate::time::Instant;
@@ -78,10 +79,9 @@ impl Click {
             None
         };
 
-        self.position.distance(new_position) < 6.0
-            && duration
-                .map(|duration| duration.as_millis() <= 300)
-                .unwrap_or(false)
+        let preferences = crate::preferences::get();
+        self.position.distance(new_position) < preferences.double_click_distance
+            && duration.is_some_and(|duration| duration <= preferences.double_click_time)
     }
 }
 
@@ -95,5 +95,35 @@ impl Mul<Transformation> for Click {
             position: self.position * transformation,
             time: self.time,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::preferences::{self, Preferences};
+    use std::time::Duration;
+
+    #[test]
+    fn a_double_click_follows_the_desktop_time_and_distance() {
+        let first = Click {
+            kind: Kind::Single,
+            button: Button::Left,
+            position: Point::ORIGIN,
+            time: Instant::now(),
+        };
+        let after = |millis| first.time + Duration::from_millis(millis);
+        assert!(first.is_consecutive(Point::new(3.0, 0.0), after(350)));
+        assert!(!first.is_consecutive(Point::ORIGIN, after(450)));
+
+        let slow = Preferences {
+            double_click_time: Duration::from_millis(700),
+            double_click_distance: 2.0,
+            ..Preferences::DEFAULT
+        };
+        preferences::scoped(slow, || {
+            assert!(first.is_consecutive(Point::ORIGIN, after(650)));
+            assert!(!first.is_consecutive(Point::new(3.0, 0.0), after(100)));
+        });
     }
 }

@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Listen to input method events.
 use crate::{Pixels, Rectangle};
 
@@ -81,6 +82,26 @@ pub enum Purpose {
     ///
     /// For example, that could alter OSK on Wayland to show extra buttons.
     Terminal,
+    /// A number, possibly with a sign and decimal separator.
+    Number,
+    /// Digits only, such as a quantity or a code.
+    Digits,
+    /// A one-time code or PIN.
+    Pin,
+    /// A telephone number.
+    Phone,
+    /// An email address.
+    Email,
+    /// A URL.
+    Url,
+    /// A person's name.
+    Name,
+    /// A date.
+    Date,
+    /// A time of day.
+    Time,
+    /// A date and time.
+    DateTime,
 }
 
 impl InputMethod {
@@ -187,4 +208,83 @@ pub enum Event {
     ///
     /// [`Shell::request_input_method`]: crate::Shell::request_input_method
     Closed,
+}
+
+/// The text around the cursor of the field an [`InputMethod`] edits, which
+/// input methods read for context such as spacing and capitalisation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Surrounding {
+    /// The text, without any pre-edit.
+    pub text: String,
+    /// The cursor, as a byte offset into `text`.
+    pub cursor: usize,
+    /// The other end of the selection, as a byte offset into `text`; the
+    /// cursor when nothing is selected.
+    pub anchor: usize,
+}
+
+impl Surrounding {
+    /// The most text a platform carries (Wayland's text-input limit).
+    pub const MAX_BYTES: usize = 4000;
+
+    /// The part of `text` around `cursor` and `anchor` (byte offsets) that a
+    /// platform can carry: at most [`Self::MAX_BYTES`], cut at character
+    /// boundaries, with the cursor inside. A selection too long to fit is
+    /// reduced to the cursor.
+    pub fn around(text: &str, cursor: usize, anchor: usize) -> Self {
+        let floor = |mut at: usize| {
+            at = at.min(text.len());
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            at
+        };
+        let cursor = floor(cursor);
+        let anchor = match floor(anchor) {
+            anchor if anchor.abs_diff(cursor) <= Self::MAX_BYTES => anchor,
+            _ => cursor,
+        };
+        let (low, high) = (cursor.min(anchor), cursor.max(anchor));
+        let spare = Self::MAX_BYTES - (high - low);
+        let mut start = low.saturating_sub(spare / 2);
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        let end = floor(start + Self::MAX_BYTES);
+        Self {
+            text: text[start..end].to_owned(),
+            cursor: cursor - start,
+            anchor: anchor - start,
+        }
+    }
+}
+
+#[cfg(test)]
+mod surrounding_tests {
+    use super::Surrounding;
+
+    // Sabotage: cut `start` without moving it to a character boundary.
+    #[test]
+    fn surrounding_text_keeps_the_cursor_within_the_platform_limit() {
+        let short = Surrounding::around("héllo", 3, 1);
+        assert_eq!(
+            short,
+            Surrounding {
+                text: "héllo".into(),
+                cursor: 3,
+                anchor: 1
+            }
+        );
+        let mut long = "é".repeat(3000);
+        long.push_str("cursor");
+        long.push_str(&"é".repeat(3000));
+        let at = 6000 + 3;
+        let cut = Surrounding::around(&long, at, at);
+        assert!(cut.text.len() <= Surrounding::MAX_BYTES);
+        assert_eq!(&cut.text[cut.cursor - 3..cut.cursor + 3], "cursor");
+        assert!(cut.text.is_char_boundary(cut.cursor));
+        let whole = Surrounding::around(&long, 0, long.len());
+        assert_eq!(whole.anchor, whole.cursor, "a selection too long to fit");
+        assert_eq!(Surrounding::around("abc", 9, 9).cursor, 3, "past the end");
+    }
 }

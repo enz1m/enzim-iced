@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::SmolStr;
 use crate::keyboard::key;
 use crate::keyboard::{Key, Location, Modifiers};
@@ -54,4 +55,9 @@ pub enum Event {
 
     /// The keyboard modifiers have changed.
     ModifiersChanged(Modifiers),
+
+    /// Caps Lock was switched on (`true`) or off (enzICED). Sent when it
+    /// changes, including when a window gains keyboard focus with it on;
+    /// reported on Wayland and X11.
+    CapsLockChanged(bool),
 }
