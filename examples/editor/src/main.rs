@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use iced::keyboard;
 use iced::widget::{
     button, center_x, column, container, operation, pick_list, row, space, text, text_editor,
@@ -66,7 +67,7 @@ impl Editor {
             Message::ActionPerformed(action) => {
                 self.is_dirty = self.is_dirty || action.is_edit();
 
-                self.content.perform(action);
+                let _ = self.content.perform(action);
 
                 Task::none()
             }

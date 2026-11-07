@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 mod icon;
 
 use iced::animation;
@@ -88,7 +89,7 @@ impl Markdown {
             Message::Edit(action) => {
                 let is_edit = action.is_edit();
 
-                self.raw.perform(action);
+                let _ = self.raw.perform(action);
 
                 if is_edit {
                     self.content = markdown::Content::parse(&self.raw.text());
