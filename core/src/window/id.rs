@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use std::fmt;
 use std::hash::Hash;
 use std::sync::atomic::{self, AtomicU64};
@@ -13,6 +14,11 @@ impl Id {
     /// Creates a new unique window [`Id`].
     pub fn unique() -> Id {
         Id(COUNT.fetch_add(1, atomic::Ordering::Relaxed))
+    }
+
+    /// Returns the stable numeric value used by runtime diagnostics.
+    pub const fn as_u64(self) -> u64 {
+        self.0
     }
 }
 

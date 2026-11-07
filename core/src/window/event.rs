@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::time::Instant;
 use crate::{Point, Size};
 
@@ -32,6 +33,11 @@ pub enum Event {
 
     /// A window changed its scale factor.
     Rescaled(f32),
+
+    /// The desktop changed how it decorates or arranges the window
+    /// (enzICED). [`decorations`](super::decorations) returns it while the
+    /// window's view is built, and the view is rebuilt.
+    DecorationsChanged(super::Decorations),
 
     /// A window redraw was requested.
     ///

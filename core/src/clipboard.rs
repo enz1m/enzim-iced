@@ -1,6 +1,8 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Access the clipboard.
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A set of clipboard requests.
 #[derive(Debug, Clone)]
@@ -10,6 +12,10 @@ pub struct Clipboard {
     /// The content that must be written to the clipboard by the runtime,
     /// if any.
     pub write: Option<Content>,
+    /// The read requests for the primary selection.
+    pub primary_reads: Vec<Kind>,
+    /// The content to offer as the primary selection, if any.
+    pub primary_write: Option<Content>,
 }
 
 impl Clipboard {
@@ -18,6 +24,8 @@ impl Clipboard {
         Self {
             reads: Vec::new(),
             write: None,
+            primary_reads: Vec::new(),
+            primary_write: None,
         }
     }
 
@@ -25,6 +33,8 @@ impl Clipboard {
     pub fn merge(&mut self, other: &mut Self) {
         self.reads.append(&mut other.reads);
         self.write = other.write.take().or(self.write.take());
+        self.primary_reads.append(&mut other.primary_reads);
+        self.primary_write = other.primary_write.take().or(self.primary_write.take());
     }
 }
 
@@ -42,6 +52,29 @@ pub enum Event {
 
     /// The clipboard was written.
     Written(Result<(), Error>),
+
+    /// The primary selection was read.
+    ReadPrimary(Result<Arc<Content>, Error>),
+
+    /// The primary selection was written.
+    WrittenPrimary(Result<(), Error>),
+}
+
+static PRIMARY_PASTE: AtomicBool = AtomicBool::new(true);
+
+/// Whether a middle click pastes the primary selection.
+///
+/// Linux desktops let users turn this off (GNOME's `gtk-enable-primary-paste`);
+/// text widgets check it before pasting. Selecting text still offers it as the
+/// primary selection either way.
+pub fn primary_paste_enabled() -> bool {
+    PRIMARY_PASTE.load(Ordering::Relaxed)
+}
+
+/// Sets whether a middle click pastes the primary selection; see
+/// [`primary_paste_enabled`].
+pub fn set_primary_paste_enabled(enabled: bool) {
+    PRIMARY_PASTE.store(enabled, Ordering::Relaxed);
 }
 
 /// Some clipboard content.

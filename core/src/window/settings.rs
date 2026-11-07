@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Configure your windows.
 #[cfg(target_os = "windows")]
 #[path = "settings/windows.rs"]
@@ -28,6 +29,8 @@ use crate::Size;
 use crate::window::{Icon, Level, Position};
 
 pub use platform::PlatformSpecific;
+#[cfg(target_os = "linux")]
+pub use platform::SessionToplevel;
 
 /// The window settings of an application.
 #[derive(Debug, Clone)]
@@ -89,6 +92,16 @@ pub struct Settings {
     /// Platform specific settings.
     pub platform_specific: PlatformSpecific,
 
+    /// The window this one is a dialog of (enzICED). The desktop keeps it
+    /// above its parent and groups them as one application window. Ignored
+    /// when the parent is not open.
+    pub parent: Option<super::Id>,
+
+    /// Whether this dialog blocks its [`parent`](Self::parent) (enzICED): the
+    /// parent receives no input while it is open, and a click on the parent
+    /// raises the dialog. Ignored without a parent.
+    pub modal: bool,
+
     /// Whether the window will close when the user requests it, e.g. when a user presses the
     /// close button.
     ///
@@ -120,6 +133,8 @@ impl Default for Settings {
             icon: None,
             exit_on_close_request: true,
             platform_specific: PlatformSpecific::default(),
+            parent: None,
+            modal: false,
         }
     }
 }
