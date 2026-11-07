@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Run your application in a headless runtime.
 use crate::core;
 use crate::core::font;
@@ -204,6 +205,28 @@ impl<P: Program + 'static> Emulator<P> {
 
                     self.cache = Some(user_interface.into_cache());
                 }
+                runtime::Action::WidgetIn { window, operation } => {
+                    // The emulator hosts exactly one window. An operation
+                    // scoped to a different window is dropped, never applied
+                    // here: that is the same rule the shell follows (#2680).
+                    if window == self.window {
+                        let mut user_interface = UserInterface::build(
+                            program.view(&self.state, self.window),
+                            self.size,
+                            self.cache.take().unwrap(),
+                            &mut self.renderer,
+                        );
+
+                        let renderer = &self.renderer;
+                        let _ =
+                            runtime::operate_in_window(window, operation, |_target, operation| {
+                                user_interface.operate(renderer, operation);
+                                true
+                            });
+
+                        self.cache = Some(user_interface.into_cache());
+                    }
+                }
                 runtime::Action::Clipboard(action) => {
                     // TODO
                     dbg!(action);
@@ -212,7 +235,8 @@ impl<P: Program + 'static> Emulator<P> {
                     use crate::runtime::window;
 
                     match action {
-                        window::Action::Open(id, _settings, sender) => {
+                        window::Action::Open(id, _settings, sender)
+                        | window::Action::OpenWithActivation(id, _settings, _, sender) => {
                             self.window = id;
 
                             let _ = sender.send(self.window);
@@ -237,6 +261,12 @@ impl<P: Program + 'static> Emulator<P> {
                         }
                         window::Action::GetMode(id, sender) if id == self.window => {
                             let _ = sender.send(core::window::Mode::Windowed);
+                        }
+                        window::Action::RequestActivationToken(_, sender) => {
+                            let _ = sender.send(Err(core::window::ActivationError::Unsupported));
+                        }
+                        window::Action::Activate(_, _, sender) => {
+                            let _ = sender.send(Err(core::window::ActivationError::Unsupported));
                         }
                         _ => {
                             // Ignored
@@ -281,6 +311,10 @@ impl<P: Program + 'static> Emulator<P> {
                 }
                 runtime::Action::Reload => {
                     // TODO
+                }
+                runtime::Action::Invalidate(_) => {
+                    // The emulator drives a single window, so every
+                    // invalidation scope is that window.
                 }
             },
         }
@@ -567,7 +601,5 @@ fn load_font(font: Cow<'static, [u8]>) -> Result<(), font::Error> {
     crate::renderer::graphics::text::font_system()
         .write()
         .expect("Write to font system")
-        .load_font(font);
-
-    Ok(())
+        .load_font(font)
 }

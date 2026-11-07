@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Record, edit, and run end-to-end tests for your iced applications.
 pub use iced_test as test;
 pub use iced_test::core;
@@ -367,7 +368,7 @@ impl<P: Program + 'static> Tester<P> {
             }
             Event::Edited(action) => {
                 if let Some(edit) = &mut self.edit {
-                    edit.perform(action);
+                    let _ = edit.perform(action);
                 }
 
                 Task::none()

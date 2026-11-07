@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! A step in an end-to-end test.
 use crate::core::keyboard;
 use crate::core::mouse;
@@ -87,7 +88,7 @@ impl Interaction {
                     }
                     _ => None?,
                 },
-                keyboard::Event::ModifiersChanged(_) => None?,
+                keyboard::Event::ModifiersChanged(_) | keyboard::Event::CapsLockChanged(_) => None?,
             }),
             _ => None?,
         })

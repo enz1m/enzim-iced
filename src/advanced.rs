@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Leverage advanced concepts like custom widgets.
 pub mod subscription {
     //! Write your own subscriptions.
@@ -16,6 +17,7 @@ pub use crate::core::clipboard;
 pub use crate::core::image;
 pub use crate::core::input_method::{self, InputMethod};
 pub use crate::core::layout::{self, Layout};
+pub use crate::core::material;
 pub use crate::core::mouse;
 pub use crate::core::overlay::{self, Overlay};
 pub use crate::core::renderer::{self, Renderer};

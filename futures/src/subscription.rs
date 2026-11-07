@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Listen to external events in your application.
 mod tracker;
 
@@ -30,6 +31,11 @@ pub enum Event {
 
     /// The system theme has changed.
     SystemThemeChanged(theme::Mode),
+
+    /// The system reduced-motion preference has changed.
+    ///
+    /// `true` means the user has requested reduced motion.
+    SystemReducedMotionChanged(bool),
 
     /// A platform specific event.
     PlatformSpecific(PlatformSpecific),

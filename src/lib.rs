@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! iced is a cross-platform GUI library focused on simplicity and type-safety.
 //! Inspired by [Elm].
 //!
@@ -481,6 +482,36 @@ use iced_winit::runtime;
 pub use iced_futures::futures;
 pub use iced_futures::stream;
 
+/// Accessibility (AT-SPI / UI Automation) bridge for the winit backend.
+///
+/// Available with the `a11y` feature. Register a tree builder (and, optionally,
+/// an action-request handler) before running the application to expose the
+/// widget tree to assistive technologies. See [`iced_winit::accessibility`].
+#[cfg(feature = "a11y")]
+pub use iced_winit::accessibility;
+
+/// Window-scoped invalidation: which windows a program update dirtied.
+///
+/// Declare a scope from an update with [`window::invalidate`] and observe what
+/// the runtime actually did with [`invalidation::instrumentation`].
+pub use iced_winit::invalidation;
+
+/// Opt-in per-window input-to-presentation observations.
+#[cfg(feature = "performance-observer")]
+pub use iced_runtime::performance;
+
+/// Opt-in per-frame stage recording through the live winit path (enzICED
+/// #2250).
+///
+/// Installing [`stages::StageRecorder`] before running an application is what
+/// makes `window::Manager::insert` attach a stage ledger to every window it
+/// creates and what registers the runtime span bridge. Without an
+/// installation, nothing is measured and nothing is allocated.
+#[cfg(feature = "performance-observer")]
+pub mod stages {
+    pub use iced_winit::presentation::{StageBridge, StageRecorder};
+}
+
 #[cfg(not(any(
     target_arch = "wasm32",
     feature = "thread-pool",
@@ -562,7 +593,10 @@ pub mod task {
 pub mod clipboard {
     //! Access the clipboard.
     pub use crate::core::clipboard::{Content, Error, Kind};
-    pub use crate::runtime::clipboard::{read, read_files, read_html, read_text, write};
+    pub use crate::core::clipboard::{primary_paste_enabled, set_primary_paste_enabled};
+    pub use crate::runtime::clipboard::{
+        read, read_files, read_html, read_primary, read_text, write, write_primary,
+    };
 
     #[cfg(feature = "image-without-codecs")]
     pub use crate::core::clipboard::Image;
@@ -598,12 +632,17 @@ pub mod keyboard {
 
 pub mod mouse {
     //! Listen and react to mouse events.
-    pub use crate::core::mouse::{Button, Cursor, Event, Interaction, ScrollDelta};
+    pub use crate::core::mouse::{
+        Button, Cursor, CursorImage, CursorImageError, CustomCursor, Event, Interaction,
+        ScrollDelta,
+    };
 }
 
 pub mod system {
     //! Retrieve system information.
-    pub use crate::runtime::system::{theme, theme_changes};
+    pub use crate::runtime::system::{
+        reduced_motion, reduced_motion_changes, theme, theme_changes,
+    };
 
     #[cfg(feature = "sysinfo")]
     pub use crate::runtime::system::{Information, information};
@@ -621,6 +660,16 @@ pub mod overlay {
         crate::core::overlay::Element<'a, Message, Theme, Renderer>;
 
     pub use iced_widget::overlay::*;
+}
+
+pub mod gesture {
+    //! React to touchpad gestures (enzICED).
+    pub use crate::core::gesture::{Event, Phase};
+}
+
+pub mod stylus {
+    //! React to drawing tablet tools (enzICED).
+    pub use crate::core::stylus::{Button, Event, Phase, Tool, ToolKind};
 }
 
 pub mod touch {

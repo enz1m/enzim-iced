@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Run a simulation of your application without side effects.
 use crate::core;
 use crate::core::event;
@@ -466,7 +467,5 @@ fn load_font(font: Cow<'static, [u8]>) -> Result<(), font::Error> {
     renderer::graphics::text::font_system()
         .write()
         .expect("Write to font system")
-        .load_font(font);
-
-    Ok(())
+        .load_font(font)
 }

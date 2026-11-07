@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Listen to runtime events.
 use crate::MaybeSend;
 use crate::core::event::{self, Event};
@@ -38,6 +39,7 @@ where
             ..
         }
         | subscription::Event::SystemThemeChanged(_)
+        | subscription::Event::SystemReducedMotionChanged(_)
         | subscription::Event::PlatformSpecific(_) => None,
         subscription::Event::Interaction {
             window,
@@ -67,9 +69,9 @@ where
             event,
             status,
         } => f(event, status, window),
-        subscription::Event::SystemThemeChanged(_) | subscription::Event::PlatformSpecific(_) => {
-            None
-        }
+        subscription::Event::SystemThemeChanged(_)
+        | subscription::Event::SystemReducedMotionChanged(_)
+        | subscription::Event::PlatformSpecific(_) => None,
     })
 }
 
