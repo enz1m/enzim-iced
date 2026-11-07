@@ -1,3 +1,9 @@
+// Modified by enzUI contributors. See FORK.md.
+pub(crate) mod editor;
+mod owned;
+mod reflow;
+pub(crate) use owned::{FontAssets, retain_section};
+
 use crate::core::alignment;
 use crate::core::text::Alignment;
 use crate::core::{Rectangle, Size, Transformation, Vector};
@@ -10,7 +16,7 @@ use crate::nudge;
 use rustc_hash::FxHashMap;
 use std::collections::hash_map;
 use std::sync::atomic::{self, AtomicU64};
-use std::sync::{self, Arc, RwLock};
+use std::sync::{self, Arc, RwLock, Weak};
 
 pub use crate::graphics::Text;
 
@@ -22,7 +28,7 @@ const COLOR_MODE: cryoglyph::ColorMode = if color::GAMMA_CORRECTION {
 
 pub type Batch = Vec<Item>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Item {
     Group {
         transformation: Transformation,
@@ -32,6 +38,67 @@ pub enum Item {
         transformation: Transformation,
         cache: Cache,
     },
+}
+
+impl Item {
+    pub(crate) fn bake_translation(&mut self) {
+        let Self::Group {
+            transformation,
+            text,
+        } = self
+        else {
+            return;
+        };
+        let offset = transformation.translation();
+        if *transformation == Transformation::IDENTITY
+            || !offset.x.is_finite()
+            || !offset.y.is_finite()
+            || *transformation != Transformation::translate(offset.x, offset.y)
+        {
+            return;
+        }
+        for section in text {
+            match section {
+                Text::Paragraph {
+                    transformation: local,
+                    ..
+                }
+                | Text::Editor {
+                    transformation: local,
+                    ..
+                }
+                | Text::Raw {
+                    transformation: local,
+                    ..
+                } => {
+                    *local = *transformation * *local;
+                }
+                Text::Cached {
+                    bounds,
+                    clip_bounds,
+                    ..
+                } => {
+                    *bounds = *bounds * *transformation;
+                    *clip_bounds = *clip_bounds * *transformation;
+                }
+            }
+        }
+        *transformation = Transformation::IDENTITY;
+    }
+
+    /// Offset this recorded text by `translation` (enzICED #2219 scene replay).
+    ///
+    /// Text keeps its transformation as data, so replaying at a new position is
+    /// a pre-multiplication rather than a re-shape: no glyph is laid out again.
+    pub fn translate(&mut self, translation: crate::core::Vector) {
+        let offset = Transformation::translate(translation.x, translation.y);
+
+        match self {
+            Item::Group { transformation, .. } | Item::Cached { transformation, .. } => {
+                *transformation = offset * *transformation;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +113,11 @@ pub struct Cache {
 pub struct Id(u64);
 
 impl Cache {
+    /// What this cache holds: its id and how often it was updated.
+    pub(crate) fn identity(&self) -> (u64, usize) {
+        (self.id.0, self.version)
+    }
+
     pub fn new(group: cache::Group, text: Vec<Text>) -> Option<Self> {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -117,6 +189,8 @@ impl Storage {
         cache: &Cache,
         new_transformation: Transformation,
         bounds: Rectangle,
+        owned_fonts: Option<&mut cryoglyph::FontSystem>,
+        maximum: u32,
     ) {
         let group_count = self.groups.len();
 
@@ -137,6 +211,7 @@ impl Storage {
             }
         });
 
+        group.atlas.set_max_size(maximum);
         match self.uploads.entry(cache.id) {
             hash_map::Entry::Occupied(entry) => {
                 let upload = entry.into_mut();
@@ -157,6 +232,7 @@ impl Storage {
                             &cache.text,
                             bounds,
                             new_transformation,
+                            owned_fonts,
                         );
                     }
 
@@ -193,6 +269,7 @@ impl Storage {
                         &cache.text,
                         bounds,
                         new_transformation,
+                        owned_fonts,
                     );
                 }
 
@@ -273,9 +350,14 @@ pub struct Pipeline {
     format: wgpu::TextureFormat,
     cache: cryoglyph::Cache,
     atlas: Arc<RwLock<cryoglyph::TextAtlas>>,
+    maximum: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl Pipeline {
+    pub(crate) fn atlas_identity(&self) -> usize {
+        Arc::as_ptr(&self.atlas) as usize
+    }
+
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let cache = cryoglyph::Cache::new(device);
         let atlas =
@@ -285,7 +367,14 @@ impl Pipeline {
             format,
             cache,
             atlas: Arc::new(RwLock::new(atlas)),
+            maximum: Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX)),
         }
+    }
+
+    pub(crate) fn independent(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        let mut pipeline = Self::new(device, queue, self.format);
+        pipeline.maximum = self.maximum.clone();
+        pipeline
     }
 
     pub fn create_viewport(&self, device: &wgpu::Device) -> Viewport {
@@ -295,7 +384,38 @@ impl Pipeline {
     pub fn trim(&self) {
         self.atlas.write().expect("Write text atlas").trim();
     }
+
+    /// Returns the glyph rasterization, upload and atlas growth mechanism
+    /// counts accumulated by the shared text atlas.
+    pub fn statistics(&self) -> TextAtlasStatistics {
+        self.atlas.read().expect("Read text atlas").statistics()
+    }
+
+    /// Caps text atlas growth at `max_size` texels per side (a VRAM budget).
+    ///
+    /// See [`cryoglyph::TextAtlas::set_max_size`]; the cap never shrinks an
+    /// atlas that has already grown past it.
+    pub fn set_max_atlas_size(&self, max_size: u32) {
+        self.maximum.store(max_size, atomic::Ordering::Relaxed);
+        self.atlas
+            .write()
+            .expect("Write text atlas")
+            .set_max_size(max_size);
+    }
+
+    /// Resets the counters returned by [`Pipeline::statistics`].
+    pub fn reset_statistics(&self) {
+        self.atlas
+            .write()
+            .expect("Write text atlas")
+            .reset_statistics();
+    }
 }
+
+/// Glyph rasterization, upload and atlas growth mechanism counts.
+///
+/// enzUI-ICED #1514.
+pub type TextAtlasStatistics = cryoglyph::AtlasStatistics;
 
 #[derive(Default)]
 pub struct State {
@@ -303,6 +423,16 @@ pub struct State {
     prepare_layer: usize,
     cache: BufferCache,
     storage: Storage,
+    /// Whether an atlas exhaustion has already been reported; the condition
+    /// repeats every frame and one warning is enough to diagnose it.
+    reported_atlas_full: bool,
+    capture_assets: Option<Weak<FontAssets>>,
+    raster_fonts: Option<owned::RasterFonts>,
+    frame_font_claimed: bool,
+    pub(crate) scroll_inputs: std::collections::BTreeMap<u64, crate::core::layout::scroll::Input>,
+    pub(crate) scroll_revision: Option<Arc<()>>,
+    reflow: reflow::Reflow,
+    editors: editor::Editors,
 }
 
 impl State {
@@ -322,6 +452,8 @@ impl State {
         layer_transformation: Transformation,
     ) {
         let mut atlas = pipeline.atlas.write().expect("Write to text atlas");
+        let maximum = pipeline.maximum.load(atomic::Ordering::Relaxed);
+        atlas.set_max_size(maximum);
 
         for item in batch {
             match item {
@@ -350,6 +482,7 @@ impl State {
                         text,
                         layer_bounds * layer_transformation,
                         layer_transformation * *transformation,
+                        self.raster_fonts.as_mut().map(|fonts| &mut fonts.system),
                     );
 
                     match result {
@@ -357,9 +490,28 @@ impl State {
                             self.prepare_layer += 1;
                         }
                         Err(cryoglyph::PrepareError::AtlasFull) => {
-                            // If the atlas cannot grow, then all bets are off.
-                            // Instead of panicking, we will just pray that the result
-                            // will be somewhat readable...
+                            // The atlas is at `max_texture_dimension_2d` and every
+                            // sized glyph in it is in use this frame, so this text
+                            // cannot be uploaded and will render incompletely.
+                            // enzUI-ICED #1514: report it instead of silently
+                            // dropping text -- `Pipeline::statistics()` carries
+                            // `growth_failures` for a caller that wants to react.
+                            if !self.reported_atlas_full {
+                                self.reported_atlas_full = true;
+
+                                let statistics = atlas.statistics();
+
+                                log::warn!(
+                                    "Text atlas is full: some text will not be drawn. \
+                                     mask atlas {}x{}, color atlas {}x{}, {} growth \
+                                     refusals so far.",
+                                    statistics.mask_size,
+                                    statistics.mask_size,
+                                    statistics.color_size,
+                                    statistics.color_size,
+                                    statistics.growth_failures,
+                                );
+                            }
                         }
                     }
                 }
@@ -377,6 +529,8 @@ impl State {
                         cache,
                         layer_transformation * *transformation,
                         layer_bounds * layer_transformation,
+                        self.raster_fonts.as_mut().map(|fonts| &mut fonts.system),
+                        maximum,
                     );
                 }
             }
@@ -441,9 +595,16 @@ fn prepare(
     sections: &[Text],
     layer_bounds: Rectangle,
     layer_transformation: Transformation,
+    owned_fonts: Option<&mut cryoglyph::FontSystem>,
 ) -> Result<(), cryoglyph::PrepareError> {
-    let mut font_system = font_system().write().expect("Write font system");
-    let font_system = font_system.raw();
+    let mut shared;
+    let font_system = match owned_fonts {
+        Some(fonts) => fonts,
+        None => {
+            shared = font_system().write().expect("Write font system");
+            shared.raw()
+        }
+    };
 
     enum Allocation {
         Paragraph(Paragraph),
@@ -489,7 +650,13 @@ fn prepare(
 
                 Some(Allocation::Cache(key))
             }
-            Text::Raw { raw, .. } => raw.buffer.upgrade().map(Allocation::Raw),
+            // A retained command owns its buffer; a per-frame one still
+            // borrows it from the widget (#2219).
+            Text::Raw { raw, retained, .. } => retained
+                .as_ref()
+                .map(|retained| retained.buffer().clone())
+                .or_else(|| raw.buffer.upgrade())
+                .map(Allocation::Raw),
         })
         .collect();
 
@@ -583,6 +750,7 @@ fn prepare(
                 Text::Raw {
                     raw,
                     transformation,
+                    retained,
                 } => {
                     let Some(Allocation::Raw(buffer)) = allocation else {
                         return None;
@@ -590,7 +758,9 @@ fn prepare(
 
                     (
                         buffer.as_ref(),
-                        None,
+                        retained
+                            .as_ref()
+                            .and_then(iced_graphics::text::RetainedRaw::hint_factor),
                         raw.position,
                         raw.color,
                         raw.clip_bounds,
@@ -599,6 +769,8 @@ fn prepare(
                 }
             };
 
+            // Upstream #3466: the text clip snaps like the quad shader and
+            // the scissor, so text is cut exactly where its panel's edge is.
             let clip_bounds = layer_bounds
                 .intersection(&(clip_bounds * transformation * layer_transformation))
                 .and_then(nudge::snap)?;
@@ -650,4 +822,152 @@ fn prepare(
         text_areas,
         &mut cryoglyph::SwashCache::new(),
     )
+}
+
+#[cfg(test)]
+mod owned_batch_tests {
+    use super::*;
+    use crate::core::{Color, Font, Pixels, Point};
+
+    fn cached() -> Text {
+        Text::Cached {
+            content: "A".into(),
+            bounds: Rectangle {
+                x: 3.0,
+                y: 5.0,
+                width: 20.0,
+                height: 24.0,
+            },
+            color: Color::WHITE,
+            size: Pixels(16.0),
+            line_height: Pixels(20.0),
+            font: Font::DEFAULT,
+            align_x: Alignment::Left,
+            align_y: alignment::Vertical::Top,
+            shaping: crate::core::text::Shaping::default(),
+            wrapping: crate::core::text::Wrapping::default(),
+            ellipsis: crate::core::text::Ellipsis::default(),
+            clip_bounds: Rectangle {
+                x: 1.0,
+                y: 2.0,
+                width: 80.0,
+                height: 50.0,
+            },
+        }
+    }
+
+    #[test]
+    fn text_batch_translation_composes_raw_transforms_and_cached_coordinates() {
+        let translation = Transformation::translate(7.0, 9.0);
+        let local = Transformation::scale(2.0);
+        let mut item = Item::Group {
+            transformation: translation,
+            text: vec![
+                cached(),
+                Text::Raw {
+                    raw: crate::graphics::text::Raw {
+                        buffer: Weak::new(),
+                        position: Point::new(4.0, 5.0),
+                        color: Color::WHITE,
+                        clip_bounds: Rectangle::with_size(Size::new(20.0, 20.0)),
+                    },
+                    retained: None,
+                    transformation: local,
+                },
+            ],
+        };
+        item.bake_translation();
+        let Item::Group {
+            transformation,
+            text,
+        } = item
+        else {
+            panic!("group retained")
+        };
+        assert_eq!(transformation, Transformation::IDENTITY);
+        let Text::Cached {
+            bounds,
+            clip_bounds,
+            size,
+            ..
+        } = &text[0]
+        else {
+            panic!("cached section retained")
+        };
+        assert_eq!(bounds.position(), Point::new(10.0, 14.0));
+        assert_eq!(bounds.size(), Size::new(20.0, 24.0));
+        assert_eq!(clip_bounds.position(), Point::new(8.0, 11.0));
+        assert_eq!(*size, Pixels(16.0));
+        let Text::Raw {
+            transformation,
+            raw,
+            ..
+        } = &text[1]
+        else {
+            panic!("raw section retained")
+        };
+        assert_eq!(*transformation, translation * local);
+        assert_eq!(raw.position, Point::new(4.0, 5.0));
+        assert_eq!(raw.position * *transformation, Point::new(15.0, 19.0));
+    }
+
+    #[test]
+    fn text_batch_translation_preserves_scale_and_nonfinite_groups() {
+        for transformation in [
+            Transformation::scale(0.5),
+            Transformation::translate(f32::INFINITY, 1.0),
+            Transformation::translate(f32::NAN, 1.0),
+        ] {
+            let before: Vec<_> = transformation
+                .as_ref()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect();
+            let mut item = Item::Group {
+                transformation,
+                text: vec![cached()],
+            };
+            item.bake_translation();
+            let Item::Group {
+                transformation,
+                text,
+            } = item
+            else {
+                panic!("group retained")
+            };
+            assert_eq!(
+                transformation
+                    .as_ref()
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                before
+            );
+            assert_eq!(text, vec![cached()]);
+        }
+    }
+
+    #[test]
+    fn text_batch_translation_keeps_cached_group_identity_and_version() {
+        let cache = Cache::new(cache::Group::unique(), vec![cached()]).unwrap();
+        let id = cache.id;
+        let version = cache.version;
+        let transformation = Transformation::translate(7.0, 9.0);
+        let mut item = Item::Cached {
+            transformation,
+            cache,
+        };
+        item.bake_translation();
+        let Item::Cached {
+            transformation: actual,
+            cache,
+        } = item
+        else {
+            panic!("cached group retained")
+        };
+        assert_eq!(actual, transformation);
+        assert_eq!(cache.id, id);
+        assert_eq!(cache.version, version);
+        assert_eq!(&*cache.text, &[cached()]);
+    }
 }

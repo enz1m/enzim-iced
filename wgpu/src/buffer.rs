@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
 use std::ops::RangeBounds;
@@ -38,6 +39,40 @@ impl<T: bytemuck::Pod> Buffer<T> {
             usage,
             raw,
             type_: PhantomData,
+        }
+    }
+
+    /// The bytes currently committed to the GPU for this buffer.
+    ///
+    /// enzICED #1515: layer-level accounting needs the real allocated size,
+    /// not the requested element count, because [`next_copy_size`] rounds up
+    /// to a power of two.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Reallocates the buffer smaller when `new_count` needs strictly less
+    /// capacity than is currently committed. Returns whether it reallocated.
+    ///
+    /// enzICED #1515: [`Self::resize`] can only grow, so a transient large
+    /// batch pinned its high-water capacity for the renderer's lifetime.
+    /// Callers must only shrink a buffer they will fully rewrite afterwards.
+    pub fn shrink(&mut self, device: &wgpu::Device, new_count: usize) -> bool {
+        let new_size = next_copy_size::<T>(new_count);
+
+        if new_size < self.size {
+            self.raw = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(self.label),
+                size: new_size,
+                usage: self.usage,
+                mapped_at_creation: false,
+            });
+
+            self.size = new_size;
+
+            true
+        } else {
+            false
         }
     }
 

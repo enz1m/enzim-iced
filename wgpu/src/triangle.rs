@@ -1,7 +1,11 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Draw meshes of triangles.
 mod msaa;
+#[cfg(test)]
+mod tests;
 
 use crate::Buffer;
+use crate::clip::ClipRegion;
 use crate::core::{Point, Rectangle, Size, Transformation, Vector};
 use crate::graphics::Antialiasing;
 use crate::graphics::mesh::{self, Mesh};
@@ -16,7 +20,7 @@ const INITIAL_VERTEX_COUNT: usize = 1_000;
 
 pub type Batch = Vec<Item>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Item {
     Group {
         transformation: Transformation,
@@ -28,10 +32,32 @@ pub enum Item {
     },
 }
 
+impl Item {
+    /// Offset these recorded meshes by `translation` (enzICED #2219 scene
+    /// replay). Meshes carry their transformation as data, so nothing is
+    /// tessellated again.
+    pub fn translate(&mut self, translation: crate::core::Vector) {
+        let offset = Transformation::translate(translation.x, translation.y);
+
+        match self {
+            Item::Group { transformation, .. } | Item::Cached { transformation, .. } => {
+                *transformation = offset * *transformation;
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Upload {
     layer: Layer,
     transformation: Transformation,
+    // enzICED #41 stage 3: part of the cache key. The rounded clip region now
+    // lives in the per-mesh uniforms, so an upload whose transformation is
+    // unchanged but whose enclosing rounded clip moved is STALE. Without this
+    // field a cached mesh keeps the clip it was first uploaded with -- e.g. a
+    // `Canvas` scrolled from outside a rounded card to inside it would never
+    // pick the clip up.
+    clip: ClipRegion,
     version: usize,
     batch: Arc<[Mesh]>,
 }
@@ -63,12 +89,15 @@ impl Storage {
         gradient: &gradient::Pipeline,
         cache: &mesh::Cache,
         new_transformation: Transformation,
+        new_clip: ClipRegion,
     ) {
         match self.uploads.entry(cache.id()) {
             hash_map::Entry::Occupied(entry) => {
                 let upload = entry.into_mut();
 
-                if upload.version != cache.version() || upload.transformation != new_transformation
+                if upload.version != cache.version()
+                    || upload.transformation != new_transformation
+                    || upload.clip != new_clip
                 {
                     if !cache.is_empty() {
                         upload.layer.prepare(
@@ -79,12 +108,14 @@ impl Storage {
                             gradient,
                             cache.batch(),
                             new_transformation,
+                            new_clip,
                         );
                     }
 
                     upload.batch = cache.batch().clone();
                     upload.version = cache.version();
                     upload.transformation = new_transformation;
+                    upload.clip = new_clip;
                 }
             }
             hash_map::Entry::Vacant(entry) => {
@@ -98,11 +129,13 @@ impl Storage {
                     gradient,
                     cache.batch(),
                     new_transformation,
+                    new_clip,
                 );
 
                 let _ = entry.insert(Upload {
                     layer,
                     transformation: new_transformation,
+                    clip: new_clip,
                     version: 0,
                     batch: cache.batch().clone(),
                 });
@@ -137,12 +170,9 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(device: &wgpu::Device, pipeline: &Pipeline) -> Self {
+    pub fn new(pipeline: &Pipeline) -> Self {
         Self {
-            msaa: pipeline
-                .msaa
-                .as_ref()
-                .map(|pipeline| msaa::State::new(device, pipeline)),
+            msaa: pipeline.msaa.as_ref().map(|_| msaa::State::new()),
             layers: Vec::new(),
             prepare_layer: 0,
             storage: Storage::new(),
@@ -158,12 +188,37 @@ impl State {
         items: &[Item],
         scale: Transformation,
         target_size: Size<u32>,
+        clip: ClipRegion,
+        batch: usize,
+        region: Rectangle<u32>,
     ) {
-        let projection =
+        let (projection, clip) =
             if let Some((state, pipeline)) = self.msaa.as_mut().zip(pipeline.msaa.as_ref()) {
-                state.prepare(device, encoder, belt, pipeline, target_size) * scale
+                // The multisample target starts at the region's origin, so a
+                // rounded clip, given in window pixels, is tested there in
+                // the region's own coordinates (enzUI-ICED #3660).
+                let clip = if clip == ClipRegion::NONE {
+                    clip
+                } else {
+                    ClipRegion {
+                        rect: [
+                            clip.rect[0] - region.x as f32,
+                            clip.rect[1] - region.y as f32,
+                            clip.rect[2],
+                            clip.rect[3],
+                        ],
+                        ..clip
+                    }
+                };
+                (
+                    state.prepare(device, encoder, belt, pipeline, batch, region) * scale,
+                    clip,
+                )
             } else {
-                Transformation::orthographic(target_size.width, target_size.height) * scale
+                (
+                    Transformation::orthographic(target_size.width, target_size.height) * scale,
+                    clip,
+                )
             };
 
         for item in items {
@@ -186,6 +241,7 @@ impl State {
                         &pipeline.gradient,
                         meshes,
                         projection * *transformation,
+                        clip,
                     );
 
                     self.prepare_layer += 1;
@@ -202,6 +258,7 @@ impl State {
                         &pipeline.gradient,
                         cache,
                         projection * *transformation,
+                        clip,
                     );
                 }
             }
@@ -217,6 +274,7 @@ impl State {
         batch: &Batch,
         bounds: Rectangle,
         screen_transformation: Transformation,
+        msaa_batch: usize,
     ) -> usize {
         let mut layer_count = 0;
 
@@ -251,7 +309,10 @@ impl State {
         render(
             encoder,
             target,
-            self.msaa.as_ref().zip(pipeline.msaa.as_ref()),
+            self.msaa
+                .as_ref()
+                .zip(pipeline.msaa.as_ref())
+                .map(|(state, pipeline)| (state, pipeline, msaa_batch)),
             &pipeline.solid,
             &pipeline.gradient,
             bounds,
@@ -284,21 +345,23 @@ impl Pipeline {
 
 fn render<'a>(
     encoder: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
-    mut msaa: Option<(&msaa::State, &msaa::Pipeline)>,
+    frame: &wgpu::TextureView,
+    msaa: Option<(&msaa::State, &msaa::Pipeline, usize)>,
     solid: &solid::Pipeline,
     gradient: &gradient::Pipeline,
     bounds: Rectangle,
     group: impl Iterator<Item = (&'a Layer, &'a [Mesh], Transformation)>,
 ) {
+    // A multisampled batch draws into a target whose origin is its region's.
+    let target = msaa.map(|(state, _, index)| (state.origin(index), state.target_size(index)));
     {
-        let mut render_pass = if let Some((_state, pipeline)) = &mut msaa {
-            pipeline.render_pass(encoder)
+        let mut render_pass = if let Some((state, _pipeline, index)) = msaa {
+            state.render_pass(index, encoder)
         } else {
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("iced_wgpu.triangle.render_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
+                    view: frame,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -320,13 +383,14 @@ fn render<'a>(
                 meshes,
                 bounds,
                 transformation,
+                target,
                 &mut render_pass,
             );
         }
     }
 
-    if let Some((state, pipeline)) = msaa {
-        state.render(pipeline, encoder, target);
+    if let Some((state, pipeline, index)) = msaa {
+        state.render(pipeline, index, encoder, frame);
     }
 }
 
@@ -360,6 +424,7 @@ impl Layer {
         gradient: &gradient::Pipeline,
         meshes: &[Mesh],
         transformation: Transformation,
+        clip: ClipRegion,
     ) {
         // Count the total amount of vertices & indices we need to handle
         let count = mesh::attribute_count_of(meshes);
@@ -407,6 +472,7 @@ impl Layer {
                 transformation
                     * mesh.transformation()
                     * Transformation::translate(snap_distance.x, snap_distance.y),
+                clip,
             );
 
             let indices = mesh.indices();
@@ -455,6 +521,7 @@ impl Layer {
         meshes: &[Mesh],
         bounds: Rectangle,
         transformation: Transformation,
+        target: Option<((u32, u32), Size<u32>)>,
         render_pass: &mut wgpu::RenderPass<'a>,
     ) {
         let mut num_solids = 0;
@@ -479,7 +546,24 @@ impl Layer {
                         num_gradients += 1;
                     }
                 }
+                // Its indices were uploaded too: skip them, or the next mesh
+                // draws with this one's index range.
+                index_offset += mesh.indices().len();
                 continue;
+            };
+
+            let clip_bounds = match target {
+                Some(((x, y), size)) => Rectangle {
+                    x: clip_bounds.x.saturating_sub(x),
+                    y: clip_bounds.y.saturating_sub(y),
+                    width: clip_bounds
+                        .width
+                        .min(size.width.saturating_sub(clip_bounds.x.saturating_sub(x))),
+                    height: clip_bounds
+                        .height
+                        .min(size.height.saturating_sub(clip_bounds.y.saturating_sub(y))),
+                },
+                None => clip_bounds,
             };
 
             render_pass.set_scissor_rect(
@@ -579,16 +663,38 @@ fn multisample_state(antialiasing: Option<Antialiasing>) -> wgpu::MultisampleSta
 #[repr(C)]
 pub struct Uniforms {
     transform: [f32; 16],
+    // enzICED #41 stage 3: the layer's rounded clip region, physical pixels.
+    // `clip_rect` is [x, y, w, h]; `clip_radius` is [tl, tr, br, bl]. All-zero
+    // radius means "no rounded clip" and the shader takes an early-out.
+    //
+    // Carved out of `_padding`, which shrinks 48 -> 40 floats, so the struct
+    // stays exactly 256 bytes: 64 (transform) + 16 + 16 + 160 = 256. That size
+    // is load-bearing -- it is the dynamic-offset stride used by
+    // `render_pass.set_bind_group(0, .., &[(n * size_of::<Uniforms>()) as u32])`
+    // and the `min_binding_size` declared in `Uniforms::entry()`.
+    clip_rect: [f32; 4],
+    clip_radius: [f32; 4],
     /// Uniform values must be 256-aligned;
     /// see: [`wgpu::Limits`] `min_uniform_buffer_offset_alignment`.
-    _padding: [f32; 48],
+    _padding: [f32; 40],
 }
 
+// enzICED #41 stage 3. `Uniforms` is indexed with a DYNAMIC OFFSET of
+// `n * size_of::<Uniforms>()`, and `wgpu::Limits::min_uniform_buffer_offset_alignment`
+// is 256 on every mainstream backend, so this size is a hardware contract and
+// not merely a layout preference. Adding the two clip vec4s without shrinking
+// `_padding` would make it 288 and every mesh after the first would bind at a
+// misaligned offset. Pinned here so the next person to touch this struct gets
+// a compile error rather than a validation error at draw time.
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 256);
+
 impl Uniforms {
-    pub fn new(transform: Transformation) -> Self {
+    pub fn new(transform: Transformation, clip: ClipRegion) -> Self {
         Self {
             transform: transform.into(),
-            _padding: [0.0; 48],
+            clip_rect: clip.rect,
+            clip_radius: clip.radius,
+            _padding: [0.0; 40],
         }
     }
 
@@ -695,6 +801,8 @@ mod solid {
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("iced_wgpu.triangle.solid.shader"),
                 source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(concat!(
+                    include_str!("shader/clip.wgsl"),
+                    "\n",
                     include_str!("shader/triangle.wgsl"),
                     "\n",
                     include_str!("shader/triangle/solid.wgsl"),
@@ -827,6 +935,8 @@ mod gradient {
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("iced_wgpu.triangle.gradient.shader"),
                 source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(concat!(
+                    include_str!("shader/clip.wgsl"),
+                    "\n",
                     include_str!("shader/triangle.wgsl"),
                     "\n",
                     include_str!("shader/triangle/gradient.wgsl"),

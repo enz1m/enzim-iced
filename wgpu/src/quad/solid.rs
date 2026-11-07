@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::Buffer;
 use crate::graphics::color;
 use crate::quad::{self, Quad};
@@ -23,11 +24,13 @@ pub struct Layer {
 }
 
 impl Layer {
-    pub fn new(device: &wgpu::Device) -> Self {
+    /// enzICED #1515: allocated for the instances actually present (with a
+    /// small floor), not an eager `INITIAL_INSTANCES` high-water mark.
+    pub fn new(device: &wgpu::Device, capacity: usize) -> Self {
         let instances = Buffer::new(
             device,
             "iced_wgpu.quad.solid.buffer",
-            quad::INITIAL_INSTANCES,
+            capacity.max(quad::MIN_INSTANCES),
             wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         );
 
@@ -37,17 +40,42 @@ impl Layer {
         }
     }
 
+    /// Uploads `instances`, returning how many bytes were staged and whether
+    /// the instance buffer had to be reallocated (enzICED #1515 accounting).
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         belt: &mut wgpu::util::StagingBelt,
         instances: &[Solid],
-    ) {
-        let _ = self.instances.resize(device, instances.len());
-        let _ = self.instances.write(encoder, belt, 0, instances);
+    ) -> quad::Upload {
+        let reallocated = self.instances.resize(device, instances.len());
+        let uploaded = self.instances.write(encoder, belt, 0, instances);
 
         self.instance_count = instances.len();
+
+        quad::Upload {
+            uploaded_bytes: uploaded as u64,
+            buffers_created: u64::from(reallocated),
+            buffers_released: u64::from(reallocated),
+        }
+    }
+
+    /// The bytes this sublayer currently holds on the GPU (enzICED #1515).
+    pub fn allocated_bytes(&self) -> u64 {
+        self.instances.size()
+    }
+
+    /// Returns the instance capacity currently committed.
+    pub fn capacity(&self) -> usize {
+        (self.instances.size() / std::mem::size_of::<Solid>() as u64) as usize
+    }
+
+    /// Releases capacity above `count` instances. Returns whether it did.
+    pub fn shrink(&mut self, device: &wgpu::Device, count: usize) -> bool {
+        self.instance_count = 0;
+        self.instances
+            .shrink(device, count.max(quad::MIN_INSTANCES))
     }
 }
 
@@ -74,6 +102,8 @@ impl Pipeline {
                 include_str!("../shader/quad/snap.wgsl"),
                 "\n",
                 include_str!("../shader/color.wgsl"),
+                "\n",
+                include_str!("../shader/clip.wgsl"),
                 "\n",
                 include_str!("../shader/quad.wgsl"),
                 "\n",

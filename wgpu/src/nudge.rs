@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Snapping coordinates to the physical pixel grid.
 //!
 //! # Why the nudge
@@ -73,7 +74,8 @@ pub fn round(bounds: Rectangle) -> Rectangle {
     (bounds + Vector::new(NUDGE, NUDGE)).round()
 }
 
-#[cfg(test)]
+// `round` exists only with `image` or `svg`, so its tests do too.
+#[cfg(all(test, any(feature = "image", feature = "svg")))]
 mod tests {
     use super::*;
     use crate::core::{Point, Size};

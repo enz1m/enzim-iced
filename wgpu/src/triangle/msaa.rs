@@ -1,8 +1,13 @@
-use crate::core::{Size, Transformation};
+// Modified by enzUI contributors. See FORK.md.
+use crate::core::{Rectangle, Size, Transformation};
 use crate::graphics;
 
 use std::num::NonZeroU64;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// Distinct target sizes kept alive at once; the least recently used goes first.
+const TARGET_BUCKETS: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct Pipeline {
@@ -12,7 +17,11 @@ pub struct Pipeline {
     constant_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
     sample_count: u32,
-    targets: Arc<RwLock<Option<Targets>>>,
+    /// Multisample targets by bucketed size. A mesh layer draws into a target
+    /// the size of its own bounds, so the clear, the resolve and the blit cost
+    /// its area rather than the whole window's.
+    targets: Arc<Mutex<Vec<(u64, Targets)>>>,
+    uses: Arc<AtomicU64>,
 }
 
 impl Pipeline {
@@ -113,52 +122,70 @@ impl Pipeline {
             constant_layout,
             texture_layout,
             sample_count: antialiasing.sample_count(),
-            targets: Arc::new(RwLock::new(None)),
+            targets: Arc::new(Mutex::new(Vec::new())),
+            uses: Arc::new(AtomicU64::new(0)),
         }
     }
 
     fn targets(&self, device: &wgpu::Device, region_size: Size<u32>) -> Targets {
-        let mut targets = self.targets.write().expect("Write MSAA targets");
+        let size = bucket(region_size);
+        let used = self.uses.fetch_add(1, Ordering::Relaxed);
+        let mut targets = self.targets.lock().expect("Lock MSAA targets");
 
-        match targets.as_mut() {
-            Some(targets)
-                if region_size.width <= targets.size.width
-                    && region_size.height <= targets.size.height => {}
-            _ => {
-                *targets = Some(Targets::new(
-                    device,
-                    self.format,
-                    &self.texture_layout,
-                    self.sample_count,
-                    region_size,
-                ));
-            }
+        if let Some((last_used, targets)) =
+            targets.iter_mut().find(|(_, targets)| targets.size == size)
+        {
+            *last_used = used;
+            return targets.clone();
         }
 
-        targets.as_ref().unwrap().clone()
+        if targets.len() == TARGET_BUCKETS
+            && let Some(oldest) = targets
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (last_used, _))| *last_used)
+                .map(|(index, _)| index)
+        {
+            let _ = targets.swap_remove(oldest);
+        }
+
+        let created = Targets::new(
+            device,
+            self.format,
+            &self.texture_layout,
+            self.sample_count,
+            size,
+        );
+        targets.push((used, created.clone()));
+        created
+    }
+}
+
+impl Pipeline {
+    /// The sizes of the multisample targets alive now.
+    #[cfg(test)]
+    pub(super) fn target_sizes(&self) -> Vec<Size<u32>> {
+        self.targets
+            .lock()
+            .expect("Lock MSAA targets")
+            .iter()
+            .map(|(_, targets)| targets.size)
+            .collect()
+    }
+}
+
+/// The target size for a region: a power of two up to 256 pixels, a multiple
+/// of 256 above it, so nearby sizes share a target.
+fn bucket(region: Size<u32>) -> Size<u32> {
+    fn round(extent: u32) -> u32 {
+        if extent <= 256 {
+            extent.max(64).next_power_of_two()
+        } else {
+            extent.div_ceil(256) * 256
+        }
     }
 
-    pub fn render_pass<'a>(&self, encoder: &'a mut wgpu::CommandEncoder) -> wgpu::RenderPass<'a> {
-        let targets = self.targets.read().expect("Read MSAA targets");
-        let targets = targets.as_ref().unwrap();
-
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("iced_wgpu.triangle.render_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &targets.attachment,
-                depth_slice: None,
-                resolve_target: Some(&targets.resolve),
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        })
-    }
+    Size::new(round(region.width), round(region.height))
 }
 
 #[derive(Debug, Clone)]
@@ -237,51 +264,74 @@ struct Ratio {
     _padding: [f32; 2],
 }
 
-pub struct State {
+/// The multisample targets and blit uniforms of one mesh batch.
+struct Batch {
     ratio: wgpu::Buffer,
     constants: wgpu::BindGroup,
     last_ratio: Option<Ratio>,
+    region: Rectangle<u32>,
+    targets: Option<Targets>,
+}
+
+/// Per-batch multisample state, indexed by the batch's position among the
+/// frame's mesh batches. A reused frame renders the batches it prepared.
+pub struct State {
+    batches: Vec<Batch>,
 }
 
 impl State {
-    pub fn new(device: &wgpu::Device, pipeline: &Pipeline) -> Self {
-        let ratio = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("iced_wgpu::triangle::msaa ratio"),
-            size: std::mem::size_of::<Ratio>() as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
-            mapped_at_creation: false,
-        });
-
-        let constants = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("iced_wgpu::triangle::msaa uniforms bind group"),
-            layout: &pipeline.constant_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Sampler(&pipeline.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: ratio.as_entire_binding(),
-                },
-            ],
-        });
-
+    pub fn new() -> Self {
         Self {
-            ratio,
-            constants,
-            last_ratio: None,
+            batches: Vec::new(),
         }
     }
 
+    /// Prepares batch `index` to draw the meshes inside `region`, in physical
+    /// pixels of the frame, and returns the projection of those meshes into
+    /// its target.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         belt: &mut wgpu::util::StagingBelt,
         pipeline: &Pipeline,
-        region_size: Size<u32>,
+        index: usize,
+        region: Rectangle<u32>,
     ) -> Transformation {
+        while self.batches.len() <= index {
+            let ratio = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("iced_wgpu::triangle::msaa ratio"),
+                size: std::mem::size_of::<Ratio>() as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+                mapped_at_creation: false,
+            });
+
+            let constants = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("iced_wgpu::triangle::msaa uniforms bind group"),
+                layout: &pipeline.constant_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Sampler(&pipeline.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: ratio.as_entire_binding(),
+                    },
+                ],
+            });
+
+            self.batches.push(Batch {
+                ratio,
+                constants,
+                last_ratio: None,
+                region: Rectangle::default(),
+                targets: None,
+            });
+        }
+
+        let batch = &mut self.batches[index];
+        let region_size = Size::new(region.width, region.height);
         let targets = pipeline.targets(device, region_size);
 
         let ratio = Ratio {
@@ -290,27 +340,84 @@ impl State {
             _padding: [0.0; 2],
         };
 
-        if Some(ratio) != self.last_ratio {
+        if Some(ratio) != batch.last_ratio {
             belt.write_buffer(
                 encoder,
-                &self.ratio,
+                &batch.ratio,
                 0,
                 NonZeroU64::new(std::mem::size_of::<Ratio>() as u64).expect("non-empty ratio"),
             )
             .copy_from_slice(bytemuck::bytes_of(&ratio));
 
-            self.last_ratio = Some(ratio);
+            batch.last_ratio = Some(ratio);
         }
 
-        Transformation::orthographic(targets.size.width, targets.size.height)
+        let projection = Transformation::orthographic(targets.size.width, targets.size.height)
+            * Transformation::translate(-(region.x as f32), -(region.y as f32));
+
+        batch.region = region;
+        batch.targets = Some(targets);
+
+        projection
     }
 
+    /// The frame position of batch `index`'s target origin.
+    pub fn origin(&self, index: usize) -> (u32, u32) {
+        self.batches
+            .get(index)
+            .map_or((0, 0), |batch| (batch.region.x, batch.region.y))
+    }
+
+    /// The size of batch `index`'s target.
+    pub fn target_size(&self, index: usize) -> Size<u32> {
+        self.batches
+            .get(index)
+            .and_then(|batch| batch.targets.as_ref())
+            .map_or(Size::new(0, 0), |targets| targets.size)
+    }
+
+    pub fn render_pass<'a>(
+        &self,
+        index: usize,
+        encoder: &'a mut wgpu::CommandEncoder,
+    ) -> wgpu::RenderPass<'a> {
+        let targets = self.batches[index]
+            .targets
+            .as_ref()
+            .expect("MSAA batch prepared before render");
+
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("iced_wgpu.triangle.render_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &targets.attachment,
+                depth_slice: None,
+                resolve_target: Some(&targets.resolve),
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        })
+    }
+
+    /// Composites batch `index` onto `target`, inside its region only.
     pub fn render(
         &self,
         pipeline: &Pipeline,
+        index: usize,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
     ) {
+        let batch = &self.batches[index];
+        let targets = batch
+            .targets
+            .as_ref()
+            .expect("MSAA batch prepared before render");
+
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("iced_wgpu::triangle::msaa render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -328,19 +435,18 @@ impl State {
             multiview_mask: None,
         });
 
-        render_pass.set_pipeline(&pipeline.raw);
-        render_pass.set_bind_group(0, &self.constants, &[]);
-        render_pass.set_bind_group(
-            1,
-            &pipeline
-                .targets
-                .read()
-                .expect("Read MSAA targets")
-                .as_ref()
-                .unwrap()
-                .bind_group,
-            &[],
+        // The blit covers its viewport, which is the region the batch drew.
+        render_pass.set_viewport(
+            batch.region.x as f32,
+            batch.region.y as f32,
+            batch.region.width as f32,
+            batch.region.height as f32,
+            0.0,
+            1.0,
         );
+        render_pass.set_pipeline(&pipeline.raw);
+        render_pass.set_bind_group(0, &batch.constants, &[]);
+        render_pass.set_bind_group(1, &targets.bind_group, &[]);
         render_pass.draw(0..6, 0..1);
     }
 }

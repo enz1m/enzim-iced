@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Draw custom primitives.
 use crate::core::{self, Rectangle};
 use crate::graphics::Viewport;
@@ -6,6 +7,7 @@ use crate::graphics::futures::{MaybeSend, MaybeSync};
 use rustc_hash::FxHashMap;
 use std::any::{Any, TypeId};
 use std::fmt::Debug;
+use std::sync::Arc;
 
 /// A batch of primitives.
 pub type Batch = Vec<Instance>;
@@ -45,6 +47,22 @@ pub trait Primitive: Debug + MaybeSend + MaybeSync + 'static {
     ///
     /// By default, it does nothing and returns `false`.
     fn draw(&self, _pipeline: &Self::Pipeline, _render_pass: &mut wgpu::RenderPass<'_>) -> bool {
+        false
+    }
+
+    /// What this primitive paints, for a renderer that paints a frame again
+    /// only where it changed (enzUI-ICED).
+    ///
+    /// Calls `area` with a signature of what is painted within each of a few
+    /// rectangles, in the same logical space as `bounds`. Together the
+    /// rectangles cover everything the primitive paints, and a rectangle's
+    /// signature changes whenever its pixels would. A primitive that answers
+    /// draws in [`draw`](Self::draw) and stays within the render pass's
+    /// scissor, which a partial frame narrows to what changed.
+    ///
+    /// Returns `false`, the default, when the primitive cannot tell: its
+    /// layer is then painted whole, and the frame in full, every time.
+    fn paint(&self, _bounds: &Rectangle, _area: &mut dyn FnMut(u64, Rectangle)) -> bool {
         false
     }
 
@@ -91,6 +109,8 @@ pub(crate) trait Stored: Debug + MaybeSend + MaybeSync + 'static {
     );
 
     fn draw(&self, storage: &Storage, render_pass: &mut wgpu::RenderPass<'_>) -> bool;
+
+    fn paint(&self, bounds: &Rectangle, area: &mut dyn FnMut(u64, Rectangle)) -> bool;
 
     fn render(
         &self,
@@ -140,6 +160,18 @@ impl<P: Primitive> Stored for BlackBox<P> {
         self.primitive.draw(renderer, render_pass)
     }
 
+    fn paint(&self, bounds: &Rectangle, area: &mut dyn FnMut(u64, Rectangle)) -> bool {
+        // Two kinds of primitive never share a signature.
+        let kind = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::any::TypeId::of::<P>().hash(&mut hasher);
+            hasher.finish()
+        };
+        self.primitive
+            .paint(bounds, &mut |signature, rect| area(signature ^ kind, rect))
+    }
+
     fn render(
         &self,
         storage: &Storage,
@@ -158,22 +190,34 @@ impl<P: Primitive> Stored for BlackBox<P> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 /// An instance of a specific [`Primitive`].
 pub struct Instance {
     /// The bounds of the [`Instance`].
     pub(crate) bounds: Rectangle,
 
     /// The [`Primitive`] to render.
-    pub(crate) primitive: Box<dyn Stored>,
+    ///
+    /// `Arc`, not `Box` (enzICED #2219): a retained scene must be able to hold
+    /// and replay a recorded custom primitive on a later frame without asking
+    /// the widget to record it again, and an erased `Box` cannot be cloned.
+    /// Sharing the same erased value is sound because [`Stored`] is only ever
+    /// read (`prepare`/`render` take `&self`).
+    pub(crate) primitive: Arc<dyn Stored>,
 }
 
 impl Instance {
+    /// Reports what the primitive paints (see [`Primitive::paint`]); `false`
+    /// when it cannot tell.
+    pub(crate) fn paint(&self, area: &mut dyn FnMut(u64, Rectangle)) -> bool {
+        self.primitive.paint(&self.bounds, area)
+    }
+
     /// Creates a new [`Instance`] with the given [`Primitive`].
     pub fn new(bounds: Rectangle, primitive: impl Primitive) -> Self {
         Instance {
             bounds,
-            primitive: Box::new(BlackBox { primitive }),
+            primitive: Arc::new(BlackBox { primitive }),
         }
     }
 }
@@ -182,6 +226,13 @@ impl Instance {
 pub trait Renderer: core::Renderer {
     /// Draws a custom primitive.
     fn draw_primitive(&mut self, bounds: Rectangle, primitive: impl Primitive);
+
+    /// Whether [`draw_primitive`](Self::draw_primitive) draws anything. A
+    /// software fallback does not, so a widget that can also draw with
+    /// quads and text checks this first (enzUI-ICED #3440).
+    fn supports_primitives(&self) -> bool {
+        true
+    }
 }
 
 /// Stores custom, user-provided types.
