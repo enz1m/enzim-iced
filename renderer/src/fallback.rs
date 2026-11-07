@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Compose existing renderers and create type-safe fallback strategies.
 use crate::core::backend;
 use crate::core::font;
@@ -46,8 +47,333 @@ where
         delegate!(self, renderer, renderer.start_layer(bounds));
     }
 
+    fn start_layer_retained(&mut self, visible: Rectangle, retained: Rectangle) {
+        delegate!(
+            self,
+            renderer,
+            renderer.start_layer_retained(visible, retained)
+        );
+    }
+
+    // enzUI-ICED #1568: a fallback delegates capabilities; it must not swallow a
+    // backend's real subtree compositing behind the core trait's opaque default.
+    fn start_layer_alpha(&mut self, bounds: Rectangle, alpha: f32) {
+        delegate!(self, renderer, renderer.start_layer_alpha(bounds, alpha));
+    }
+
+    fn start_layer_composite(
+        &mut self,
+        bounds: Rectangle,
+        alpha: f32,
+        scale: f32,
+        rotation: f32,
+        origin: Point,
+    ) {
+        delegate!(
+            self,
+            renderer,
+            renderer.start_layer_composite(bounds, alpha, scale, rotation, origin)
+        );
+    }
+
+    fn end_layer_composite(&mut self) {
+        delegate!(self, renderer, renderer.end_layer_composite());
+    }
+
+    // enzUI-ICED #2950: a fallback must report the *active* backend's material
+    // capability. Taking the trait default here would tell every caller that no
+    // backdrop can be filtered, which is a silent downgrade to opaque panels on
+    // a backend that can filter one.
+    fn material_support(&self) -> core::material::Support {
+        delegate!(self, renderer, renderer.material_support())
+    }
+
+    fn material_luminance(&self, probe: u64) -> Option<f32> {
+        delegate!(self, renderer, renderer.material_luminance(probe))
+    }
+
+    fn material_luminance_with_frame(&self, probe: u64) -> Option<(f32, u64)> {
+        delegate!(
+            self,
+            renderer,
+            renderer.material_luminance_with_frame(probe)
+        )
+    }
+
+    fn material_frame(&self) -> u64 {
+        delegate!(self, renderer, renderer.material_frame())
+    }
+
+    fn set_material_waker(&mut self, waker: core::shell::Waker) {
+        delegate!(self, renderer, renderer.set_material_waker(waker));
+    }
+
+    fn request_material_redraw(&self) {
+        delegate!(self, renderer, renderer.request_material_redraw());
+    }
+
+    fn start_layer_material(&mut self, bounds: Rectangle, material: core::material::Material) {
+        delegate!(
+            self,
+            renderer,
+            renderer.start_layer_material(bounds, material)
+        );
+    }
+
+    // enzICED #41: forward the rounded clip to the active backend so it can
+    // honour the radius (tiny_skia does; wgpu falls back to rectangular). Not
+    // forwarding this would make every fallback-wrapped renderer silently take
+    // the trait default (rectangular), defeating the tiny_skia implementation.
+    fn start_layer_rounded(&mut self, bounds: Rectangle, radius: core::border::Radius) {
+        delegate!(self, renderer, renderer.start_layer_rounded(bounds, radius));
+    }
+
+    fn start_layout_layer(
+        &mut self,
+        source: core::renderer::LayoutLayer,
+        bounds: Rectangle,
+        radius: Option<core::border::Radius>,
+    ) -> bool {
+        delegate!(
+            self,
+            renderer,
+            renderer.start_layout_layer(source, bounds, radius)
+        )
+    }
+
+    fn layout_clip_capture(
+        &self,
+        node: core::renderer::NodeId,
+    ) -> Option<core::renderer::ClipCapture> {
+        delegate!(self, renderer, renderer.layout_clip_capture(node))
+    }
+
+    fn layout_reveal_capture_viewport(&self, node: core::renderer::NodeId) -> Option<Rectangle> {
+        delegate!(
+            self,
+            renderer,
+            renderer.layout_reveal_capture_viewport(node)
+        )
+    }
+
+    fn start_layout_reveal(&mut self, node: core::renderer::NodeId, progress: f32) -> bool {
+        delegate!(self, renderer, renderer.start_layout_reveal(node, progress))
+    }
+
     fn end_layer(&mut self) {
         delegate!(self, renderer, renderer.end_layer());
+    }
+
+    fn record_presentation(
+        &mut self,
+        program: std::sync::Arc<core::renderer::presentation::Program>,
+    ) -> Result<(), core::renderer::presentation::Error> {
+        delegate!(self, renderer, renderer.record_presentation(program))
+    }
+
+    fn request_docked_presentation(
+        &mut self,
+        capture: core::renderer::docked::Capture,
+    ) -> Result<(), core::renderer::presentation::Error> {
+        delegate!(
+            self,
+            renderer,
+            renderer.request_docked_presentation(capture)
+        )
+    }
+
+    fn begin_scroll_view(
+        &mut self,
+        node: core::renderer::NodeId,
+        bounds: Rectangle,
+        content: Rectangle,
+        config: core::layout::scroll::Config,
+        input: core::layout::scroll::Input,
+        paint: core::renderer::presentation::scroll_paint::Paint,
+    ) -> Option<Rectangle> {
+        delegate!(
+            self,
+            renderer,
+            renderer.begin_scroll_view(node, bounds, content, config, input, paint)
+        )
+    }
+    fn draw_scroll_chrome(
+        &mut self,
+        node: Option<core::renderer::NodeId>,
+        bounds: Rectangle,
+        content: Rectangle,
+        config: core::layout::scroll::Config,
+        input: core::layout::scroll::Input,
+        paint: core::renderer::presentation::scroll_paint::Paint,
+    ) {
+        delegate!(
+            self,
+            renderer,
+            renderer.draw_scroll_chrome(node, bounds, content, config, input, paint)
+        );
+    }
+    fn end_scroll_view(&mut self, node: core::renderer::NodeId) {
+        delegate!(self, renderer, renderer.end_scroll_view(node));
+    }
+
+    fn editor_presentation_height(&self, node: core::renderer::NodeId) -> Option<f32> {
+        delegate!(self, renderer, renderer.editor_presentation_height(node))
+    }
+
+    fn fill_layout_editor_scrollbars(
+        &mut self,
+        owner: renderer::NodeId,
+        editor: renderer::NodeId,
+        source: Option<std::sync::Arc<()>>,
+        bounds: Rectangle,
+        metrics: core::text::editor::ScrollMetrics,
+        paint: core::text::editor::scrollbar::Paint,
+    ) {
+        delegate!(
+            self,
+            renderer,
+            renderer.fill_layout_editor_scrollbars(owner, editor, source, bounds, metrics, paint)
+        );
+    }
+
+    fn fill_layout_quad(
+        &mut self,
+        node: core::renderer::NodeId,
+        quad: core::renderer::Quad,
+        background: core::Background,
+    ) {
+        delegate!(
+            self,
+            renderer,
+            renderer.fill_layout_quad(node, quad, background)
+        );
+    }
+
+    fn fill_layout_blink(
+        &mut self,
+        node: core::renderer::NodeId,
+        quad: core::renderer::Quad,
+        background: core::Background,
+        blink: core::layout::input::Blink,
+        at: core::time::Instant,
+    ) {
+        delegate!(
+            self,
+            renderer,
+            renderer.fill_layout_blink(node, quad, background, blink, at)
+        );
+    }
+
+    fn fill_layout_rule(
+        &mut self,
+        node: core::renderer::NodeId,
+        allocation: Rectangle,
+        quad: core::renderer::Quad,
+        background: core::Background,
+        paint: core::layout::rule::Paint,
+    ) {
+        delegate!(
+            self,
+            renderer,
+            renderer.fill_layout_rule(node, allocation, quad, background, paint)
+        );
+    }
+
+    fn reject_layout_paint(&mut self, node: core::renderer::NodeId) {
+        delegate!(self, renderer, renderer.reject_layout_paint(node));
+    }
+
+    fn layout_culling_capture(
+        &self,
+        scope: core::renderer::NodeId,
+        viewport: Rectangle,
+    ) -> Option<core::renderer::CullCapture> {
+        match self {
+            Self::Primary(renderer) => renderer.layout_culling_capture(scope, viewport),
+            Self::Secondary(renderer) => renderer.layout_culling_capture(scope, viewport),
+        }
+    }
+
+    fn layout_culling_active(&self, scope: core::renderer::NodeId) -> bool {
+        match self {
+            Self::Primary(renderer) => renderer.layout_culling_active(scope),
+            Self::Secondary(renderer) => renderer.layout_culling_active(scope),
+        }
+    }
+
+    fn retains_layout_leaf(&self, node: core::renderer::NodeId) -> bool {
+        delegate!(self, renderer, renderer.retains_layout_leaf(node))
+    }
+
+    fn layout_capture_viewport(&self, node: core::renderer::NodeId) -> Option<Rectangle> {
+        match self {
+            Self::Primary(renderer) => renderer.layout_capture_viewport(node),
+            Self::Secondary(renderer) => renderer.layout_capture_viewport(node),
+        }
+    }
+
+    fn tab_strip_capture_viewport(&self, node: core::renderer::NodeId) -> Option<Rectangle> {
+        delegate!(self, renderer, renderer.tab_strip_capture_viewport(node))
+    }
+
+    fn presentation_refusal(&self) -> Option<core::renderer::presentation::Error> {
+        delegate!(self, renderer, renderer.presentation_refusal())
+    }
+
+    fn start_recording(&mut self, bounds: Rectangle) -> bool {
+        delegate!(self, renderer, renderer.start_recording(bounds))
+    }
+
+    fn start_staged_recording(&mut self, bounds: Rectangle) -> bool {
+        delegate!(self, renderer, renderer.start_staged_recording(bounds))
+    }
+
+    fn start_layout_recording(&mut self, node: core::renderer::NodeId) -> bool {
+        delegate!(self, renderer, renderer.start_layout_recording(node))
+    }
+
+    fn mark_recording(&mut self, node: core::renderer::NodeId) {
+        delegate!(self, renderer, renderer.mark_recording(node));
+    }
+
+    fn mark_recording_at(&mut self, node: core::renderer::NodeId, baseline: core::Vector) {
+        delegate!(self, renderer, renderer.mark_recording_at(node, baseline));
+    }
+
+    fn replay_tracks_at(
+        &mut self,
+        recording: &core::renderer::Recording,
+        tracks: &[core::renderer::Track],
+        at: core::time::Instant,
+    ) -> bool {
+        delegate!(
+            self,
+            renderer,
+            renderer.replay_tracks_at(recording, tracks, at)
+        )
+    }
+
+    fn replay_tracks(
+        &mut self,
+        recording: &core::renderer::Recording,
+        tracks: &[core::renderer::Track],
+    ) -> bool {
+        delegate!(self, renderer, renderer.replay_tracks(recording, tracks))
+    }
+
+    fn reuse_frame(&mut self) -> bool {
+        delegate!(self, renderer, renderer.reuse_frame())
+    }
+
+    fn finish_recording(&mut self) -> Option<core::renderer::Recording> {
+        delegate!(self, renderer, renderer.finish_recording())
+    }
+
+    fn replay(&mut self, recording: &core::renderer::Recording, translation: core::Vector) -> bool {
+        // A recording made by the OTHER backend returns `None` from
+        // `payload`, so a renderer that fell back mid-run reports the miss and
+        // the caller redraws instead of replaying foreign layers (#2219).
+        delegate!(self, renderer, renderer.replay(recording, translation))
     }
 
     fn start_transformation(&mut self, transformation: Transformation) {
@@ -78,8 +404,57 @@ where
         delegate!(self, renderer, renderer.scale())
     }
 
+    fn current_transformation(&self) -> Transformation {
+        delegate!(self, renderer, renderer.current_transformation())
+    }
+
     fn tick(&mut self) {
         delegate!(self, renderer, renderer.tick());
+    }
+
+    fn reconcile_presented_scroll(
+        &self,
+        node: core::renderer::NodeId,
+        config: core::layout::scroll::Config,
+        input: core::layout::scroll::Input,
+        viewport: core::Size,
+        content: core::Size,
+    ) -> Option<bool> {
+        delegate!(
+            self,
+            renderer,
+            renderer.reconcile_presented_scroll(node, config, input, viewport, content)
+        )
+    }
+
+    fn install_presented_geometry(
+        &mut self,
+        recording: &core::renderer::Recording,
+        sample: std::sync::Arc<core::renderer::presentation::Sample>,
+    ) -> bool {
+        delegate!(
+            self,
+            renderer,
+            renderer.install_presented_geometry(recording, sample)
+        )
+    }
+
+    fn install_presented_layout(
+        &mut self,
+        recording: &core::renderer::Recording,
+        sample: std::sync::Arc<core::renderer::presentation::Sample>,
+    ) -> bool {
+        delegate!(
+            self,
+            renderer,
+            renderer.install_presented_layout(recording, sample)
+        )
+    }
+    fn presented_layout(&self) -> Option<&std::sync::Arc<core::renderer::presentation::Sample>> {
+        delegate!(self, renderer, renderer.presented_layout())
+    }
+    fn clear_presented_layout(&mut self) {
+        delegate!(self, renderer, renderer.clear_presented_layout());
     }
 
     fn reset(&mut self, new_bounds: Rectangle) {
@@ -108,6 +483,20 @@ where
     const SCROLL_RIGHT_ICON: char = A::SCROLL_RIGHT_ICON;
     const ICED_LOGO: char = A::ICED_LOGO;
 
+    fn reconcile_presented_editor(
+        &self,
+        node: core::renderer::NodeId,
+        editor: &mut Self::Editor,
+        viewport: Size,
+    ) -> bool {
+        match self {
+            Self::Primary(renderer) => renderer.reconcile_presented_editor(node, editor, viewport),
+            Self::Secondary(renderer) => {
+                renderer.reconcile_presented_editor(node, editor, viewport)
+            }
+        }
+    }
+
     fn fill_paragraph(
         &mut self,
         text: &Self::Paragraph,
@@ -119,6 +508,19 @@ where
             self,
             renderer,
             renderer.fill_paragraph(text, position, color, clip_bounds)
+        );
+    }
+
+    fn draw_editor_view(
+        &mut self,
+        node: Option<core::renderer::NodeId>,
+        editor: &Self::Editor,
+        paint: &core::text::editor::paint::Paint<'_, core::Font>,
+    ) {
+        delegate!(
+            self,
+            renderer,
+            renderer.draw_editor_view(node, editor, paint)
         );
     }
 
@@ -176,6 +578,24 @@ where
         delegate!(self, renderer, renderer.measure_image(handle))
     }
 
+    fn draw_layout_image(
+        &mut self,
+        node: Option<core::renderer::NodeId>,
+        image: Image<A::Handle>,
+        bounds: Rectangle,
+        clip_bounds: Rectangle,
+        scale: f32,
+    ) {
+        match self {
+            Self::Primary(renderer) => {
+                renderer.draw_layout_image(node, image, bounds, clip_bounds, scale);
+            }
+            Self::Secondary(renderer) => {
+                renderer.draw_layout_image(node, image, bounds, clip_bounds, scale);
+            }
+        }
+    }
+
     fn draw_image(&mut self, image: Image<A::Handle>, bounds: Rectangle, clip_bounds: Rectangle) {
         delegate!(
             self,
@@ -192,6 +612,19 @@ where
 {
     fn measure_svg(&self, handle: &svg::Handle) -> Size<u32> {
         delegate!(self, renderer, renderer.measure_svg(handle))
+    }
+
+    fn draw_layout_svg(
+        &mut self,
+        node: Option<core::renderer::NodeId>,
+        svg: Svg,
+        bounds: Rectangle,
+        clip_bounds: Rectangle,
+    ) {
+        match self {
+            Self::Primary(renderer) => renderer.draw_layout_svg(node, svg, bounds, clip_bounds),
+            Self::Secondary(renderer) => renderer.draw_layout_svg(node, svg, bounds, clip_bounds),
+        }
     }
 
     fn draw_svg(&mut self, svg: Svg, bounds: Rectangle, clip_bounds: Rectangle) {
@@ -239,6 +672,155 @@ pub enum Surface<A, B> {
     Secondary(B),
 }
 
+/// The animation lane of whichever inner compositor won, adapted to this
+/// compositor's surface enum (enzICED #2219).
+///
+/// # Why this type has to exist
+///
+/// `Compositor<A, B>` is the **shipped** `iced` compositor: with the default
+/// `wgpu` + `tiny-skia` features, `iced::Compositor` *is*
+/// `fallback::Compositor<iced_wgpu::window::Compositor,
+/// iced_tiny_skia::window::Compositor>`. Its surface is
+/// [`Surface<A::Surface, B::Surface>`], which is a different type from the
+/// surface `A`'s own lane backend presents to.
+///
+/// Before this adapter existed, `iced_wgpu` implemented the lane and this
+/// wrapper did not forward it, so `spawn_animation_lane` resolved to the
+/// trait's `None` default for every real application: the lane compiled, was
+/// unit-tested green off-thread, and could never own a surface in production.
+/// That is the same class of defect as fork patch 60's "no caller", one layer
+/// further out, and no test caught it because every lane test constructed a
+/// backend directly (#2219 review finding B1).
+///
+/// # Failing closed
+///
+/// A surface from the *other* variant can only appear if the compositor fell
+/// back after the lane was built. The adapter then reports a surface error
+/// instead of panicking: a panic here would kill the render worker and poison
+/// the lane, while an error stops the lane cleanly and the UI thread takes the
+/// surface back and draws.
+enum LaneAdapter<A, B> {
+    /// The primary compositor's lane, presenting into `Surface::Primary`.
+    Primary(Box<dyn graphics::lane::Backend<Surface = A>>),
+    /// The secondary compositor's lane, presenting into `Surface::Secondary`.
+    Secondary(Box<dyn graphics::lane::Backend<Surface = B>>),
+}
+
+impl<A, B> graphics::lane::Backend for LaneAdapter<A, B>
+where
+    A: Send + 'static,
+    B: Send + 'static,
+{
+    type Surface = Surface<A, B>;
+
+    fn configure(&mut self, surface: &mut Self::Surface, width: u32, height: u32) {
+        match (self, surface) {
+            (Self::Primary(backend), Surface::Primary(surface)) => {
+                backend.configure(surface, width, height);
+            }
+            (Self::Secondary(backend), Surface::Secondary(surface)) => {
+                backend.configure(surface, width, height);
+            }
+            // Mismatched halves: do nothing here and let `present` below report
+            // the error, so the lane stops on a path that has a return value.
+            _ => {}
+        }
+    }
+
+    fn replay(
+        &mut self,
+        viewport: &graphics::Viewport,
+        scene: &renderer::Recording,
+        tracks: &[renderer::Track],
+    ) -> bool {
+        match self {
+            Self::Primary(backend) => backend.replay(viewport, scene, tracks),
+            Self::Secondary(backend) => backend.replay(viewport, scene, tracks),
+        }
+    }
+
+    fn retire_resources(&mut self) {
+        match self {
+            Self::Primary(backend) => backend.retire_resources(),
+            Self::Secondary(backend) => backend.retire_resources(),
+        }
+    }
+
+    fn layout_sample(
+        &mut self,
+    ) -> Result<
+        Option<std::sync::Arc<core::renderer::presentation::Sample>>,
+        core::renderer::presentation::Error,
+    > {
+        match self {
+            Self::Primary(backend) => backend.layout_sample(),
+            Self::Secondary(backend) => backend.layout_sample(),
+        }
+    }
+
+    fn replay_refusal(&self) -> Option<core::renderer::presentation::Error> {
+        match self {
+            Self::Primary(backend) => backend.replay_refusal(),
+            Self::Secondary(backend) => backend.replay_refusal(),
+        }
+    }
+
+    fn present(
+        &mut self,
+        surface: &mut Self::Surface,
+        viewport: &graphics::Viewport,
+        background: Color,
+        on_pre_present: &mut dyn FnMut(),
+    ) -> Result<(), compositor::SurfaceError> {
+        // The pre-commit hook is forwarded UNCHANGED (enzICED #2219). The
+        // fallback wrapper reconstructs no identity of its own: whichever half
+        // actually commits is the one that must trigger the feedback request,
+        // in that half's own request stream, at that half's own seam.
+        match (self, surface) {
+            (Self::Primary(backend), Surface::Primary(surface)) => {
+                backend.present(surface, viewport, background, on_pre_present)
+            }
+            (Self::Secondary(backend), Surface::Secondary(surface)) => {
+                backend.present(surface, viewport, background, on_pre_present)
+            }
+            // The compositor fell back underneath a running lane. Stop, rather
+            // than present a surface this backend does not own. Nothing is
+            // committed, so the hook is deliberately NOT called.
+            _ => Err(compositor::SurfaceError::Lost),
+        }
+    }
+
+    fn presentation_quality(&self) -> compositor::PresentationQuality {
+        match self {
+            Self::Primary(backend) => backend.presentation_quality(),
+            Self::Secondary(backend) => backend.presentation_quality(),
+        }
+    }
+
+    /// Forwarded to whichever half actually presented (enzICED #2219).
+    ///
+    /// Not forwarding it is exactly the class of defect that left
+    /// `spawn_animation_lane` unreachable in production: the shipped compositor
+    /// is this adapter, so a stage the adapter swallows is a stage the shipped
+    /// build never records.
+    fn take_present_stages(&mut self) -> Option<graphics::lane::PresentStages> {
+        match self {
+            Self::Primary(backend) => backend.take_present_stages(),
+            Self::Secondary(backend) => backend.take_present_stages(),
+        }
+    }
+
+    /// Forwarded for the same reason (enzICED #2250): the shipped compositor is
+    /// this adapter, so an opt-in the adapter swallows never reaches the wgpu
+    /// backend and every live frame reports no spans at all.
+    fn measure_stages(&mut self, enabled: bool) {
+        match self {
+            Self::Primary(backend) => backend.measure_stages(enabled),
+            Self::Secondary(backend) => backend.measure_stages(enabled),
+        }
+    }
+}
+
 impl<A, B> graphics::Compositor for Compositor<A, B>
 where
     A: graphics::Compositor,
@@ -263,6 +845,24 @@ where
         )
         .await
         {
+            // A GPU emulated on the CPU yields to the secondary backend unless
+            // a backend was named; it stays when the secondary cannot start.
+            Ok(compositor)
+                if compositor.emulates_gpu() && settings.backend == backend::Backend::Best =>
+            {
+                if let Ok(secondary) = B::new(
+                    settings.clone(),
+                    display.clone(),
+                    compatible_window.clone(),
+                    shell.clone(),
+                )
+                .await
+                {
+                    log::info!("the GPU is emulated on the CPU; using the software renderer");
+                    return Ok(Self::Secondary(secondary));
+                }
+                return Ok(Self::Primary(compositor));
+            }
             Ok(compositor) => return Ok(Self::Primary(compositor)),
             Err(error) => {
                 errors.push(error);
@@ -284,6 +884,20 @@ where
         }
 
         Err(backend::Error::List(errors))
+    }
+
+    fn device_lost(&self) -> bool {
+        match self {
+            Self::Primary(compositor) => compositor.device_lost(),
+            Self::Secondary(compositor) => compositor.device_lost(),
+        }
+    }
+
+    fn emulates_gpu(&self) -> bool {
+        match self {
+            Self::Primary(compositor) => compositor.emulates_gpu(),
+            Self::Secondary(compositor) => compositor.emulates_gpu(),
+        }
     }
 
     fn create_renderer(&self, settings: renderer::Settings) -> Self::Renderer {
@@ -335,6 +949,34 @@ where
         delegate!(self, compositor, compositor.information())
     }
 
+    fn presentation_quality(&self) -> compositor::PresentationQuality {
+        delegate!(self, compositor, compositor.presentation_quality())
+    }
+
+    fn measure_present_stages(&mut self, enabled: bool) {
+        delegate!(self, compositor, compositor.measure_present_stages(enabled));
+    }
+
+    fn take_present_stages(&mut self) -> Option<graphics::lane::PresentStages> {
+        delegate!(self, compositor, compositor.take_present_stages())
+    }
+
+    /// Forwards the winning inner compositor's lane backend, adapted to this
+    /// compositor's surface enum (enzICED #2219).
+    fn animation_lane_backend(
+        &self,
+        renderer_settings: renderer::Settings,
+    ) -> Option<Box<dyn graphics::lane::Backend<Surface = Self::Surface>>> {
+        match self {
+            Self::Primary(compositor) => Some(Box::new(LaneAdapter::Primary(
+                compositor.animation_lane_backend(renderer_settings)?,
+            ))),
+            Self::Secondary(compositor) => Some(Box::new(LaneAdapter::Secondary(
+                compositor.animation_lane_backend(renderer_settings)?,
+            ))),
+        }
+    }
+
     fn present(
         &mut self,
         renderer: &mut Self::Renderer,
@@ -365,6 +1007,23 @@ where
                 on_pre_present,
             ),
             _ => unreachable!(),
+        }
+    }
+
+    fn unchanged(
+        &mut self,
+        renderer: &mut Self::Renderer,
+        viewport: &graphics::Viewport,
+        background_color: Color,
+    ) -> bool {
+        match (self, renderer) {
+            (Self::Primary(compositor), Renderer::Primary(renderer)) => {
+                compositor.unchanged(renderer, viewport, background_color)
+            }
+            (Self::Secondary(compositor), Renderer::Secondary(renderer)) => {
+                compositor.unchanged(renderer, viewport, background_color)
+            }
+            _ => false,
         }
     }
 
@@ -402,6 +1061,10 @@ where
             }
         }
     }
+
+    fn supports_primitives(&self) -> bool {
+        matches!(self, Self::Primary(_))
+    }
 }
 
 #[cfg(feature = "geometry")]
@@ -424,6 +1087,19 @@ mod geometry {
                 Self::Primary(renderer) => Frame::Primary(renderer.new_frame(bounds)),
                 Self::Secondary(renderer) => Frame::Secondary(renderer.new_frame(bounds)),
             }
+        }
+
+        fn draw_layout_border(
+            &mut self,
+            node: crate::core::renderer::NodeId,
+            bounds: Rectangle,
+            border: geometry::border::Border,
+        ) {
+            delegate!(
+                self,
+                renderer,
+                renderer.draw_layout_border(node, bounds, border)
+            );
         }
 
         fn draw_geometry(&mut self, geometry: Self::Geometry) {
