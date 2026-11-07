@@ -1,4 +1,6 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::Primitive;
+use crate::core::border;
 use crate::core::renderer::Quad;
 use crate::core::{self, Background, Color, Point, Rectangle, Svg, Transformation};
 use crate::graphics::damage;
@@ -10,9 +12,25 @@ use std::sync::Arc;
 
 pub type Stack = layer::Stack<Layer>;
 
+/// One active subtree-alpha boundary recorded on a layer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AlphaGroup {
+    pub id: usize,
+    pub alpha: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Layer {
     pub bounds: Rectangle,
+    /// Rounded clip radius for this layer, in the layer's own (post-transform)
+    /// coordinate space (enzICED #41). `None` means a plain rectangular clip.
+    pub clip_radius: Option<border::Radius>,
+    /// Alpha groups enclosing this layer, outermost first (enzUI-ICED #1568).
+    ///
+    /// IDs distinguish adjacent sibling groups that happen to use the same
+    /// opacity. The present pass uses path transitions to composite each group
+    /// exactly once.
+    pub(crate) alpha_groups: Vec<AlphaGroup>,
     pub quads: Vec<(Quad, Background)>,
     pub primitives: Vec<Item<Primitive>>,
     pub images: Vec<Image>,
@@ -40,6 +58,9 @@ impl Layer {
     ) {
         let paragraph = Text::Paragraph {
             paragraph: paragraph.downgrade(),
+            // Per-frame recording borrows; `Text::retain` (#2219) is what takes
+            // ownership when a scene must outlive the frame.
+            retained: None,
             position,
             color,
             clip_bounds,
@@ -97,6 +118,9 @@ impl Layer {
     pub fn draw_text_raw(&mut self, raw: graphics::text::Raw, transformation: Transformation) {
         let raw = Text::Raw {
             raw,
+            // Per-frame recording borrows; `Text::retain` (#2219) upgrades to a
+            // strong buffer when a scene must outlive the frame.
+            retained: None,
             transformation,
         };
 
@@ -204,7 +228,7 @@ impl Layer {
     }
 
     pub fn damage(previous: &Self, current: &Self) -> Vec<Rectangle> {
-        if previous.bounds != current.bounds {
+        if previous.bounds != current.bounds || previous.alpha_groups != current.alpha_groups {
             return vec![previous.bounds, current.bounds];
         }
 
@@ -232,17 +256,28 @@ impl Layer {
             },
         );
 
+        let group_bounds = |item: &Item<Text>| -> Vec<Rectangle> {
+            item.as_slice()
+                .iter()
+                .filter_map(Text::visible_bounds)
+                .map(|bounds| bounds * item.transformation())
+                .collect()
+        };
         let text = damage::diff(
             &previous.text,
             &current.text,
-            |item| {
-                item.as_slice()
-                    .iter()
-                    .filter_map(Text::visible_bounds)
-                    .map(|bounds| bounds * item.transformation())
-                    .collect()
-            },
+            group_bounds,
             |text_a, text_b| {
+                // A group that moved or changed its clip (a scrolled text cache)
+                // repaints where it was and where it is, whatever its items.
+                if text_a.transformation() != text_b.transformation()
+                    || text_a.clip_bounds() != text_b.clip_bounds()
+                {
+                    return group_bounds(text_a)
+                        .into_iter()
+                        .chain(group_bounds(text_b))
+                        .collect();
+                }
                 damage::list(
                     text_a.as_slice(),
                     text_b.as_slice(),
@@ -304,6 +339,8 @@ impl Default for Layer {
     fn default() -> Self {
         Self {
             bounds: Rectangle::INFINITE,
+            clip_radius: None,
+            alpha_groups: Vec::new(),
             quads: Vec::new(),
             primitives: Vec::new(),
             text: Vec::new(),
@@ -320,6 +357,22 @@ impl graphics::Layer for Layer {
         }
     }
 
+    fn with_clip_radius(bounds: Rectangle, radius: border::Radius) -> Self {
+        Self {
+            bounds,
+            clip_radius: Some(radius),
+            ..Self::default()
+        }
+    }
+
+    fn set_clip_radius(&mut self, radius: Option<border::Radius>) {
+        self.clip_radius = radius;
+    }
+
+    fn clip_radius(&self) -> Option<border::Radius> {
+        self.clip_radius
+    }
+
     fn bounds(&self) -> Rectangle {
         self.bounds
     }
@@ -332,6 +385,8 @@ impl graphics::Layer for Layer {
 
     fn reset(&mut self) {
         self.bounds = Rectangle::INFINITE;
+        self.clip_radius = None;
+        self.alpha_groups.clear();
 
         self.quads.clear();
         self.primitives.clear();

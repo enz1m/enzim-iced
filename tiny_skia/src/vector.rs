@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::core::svg::{Data, Handle};
 use crate::core::{Color, Rectangle, Size};
 
@@ -182,11 +183,19 @@ impl Cache {
                 log::warn!("SVG rendering for {handle:?} panicked: {error:?}");
             }
 
-            if let Some([r, g, b, _]) = key.color {
-                // Apply color filter
+            if let Some([r, g, b, a]) = key.color {
+                // Apply color filter. The tint's own alpha `a` is folded into
+                // the glyph's coverage (the source premultiplied alpha in the
+                // top byte) so a translucent tint fades the stroke, matching
+                // how `text` treats a translucent colour. `a == 255` (opaque)
+                // is a no-op. This composes multiplicatively with the separate
+                // `Svg::opacity` blit (`PixmapPaint::opacity`), which is
+                // applied when the raster is drawn, not here.
                 for pixel in bytemuck::cast_slice_mut::<u8, u32>(image.data_mut()) {
+                    let src_alpha = (*pixel >> 24) as u8;
+                    let tinted_alpha = (u16::from(src_alpha) * u16::from(a) / 255) as u8;
                     *pixel = bytemuck::cast(
-                        tiny_skia::ColorU8::from_rgba(b, g, r, (*pixel >> 24) as u8).premultiply(),
+                        tiny_skia::ColorU8::from_rgba(b, g, r, tinted_alpha).premultiply(),
                     );
                 }
             } else {

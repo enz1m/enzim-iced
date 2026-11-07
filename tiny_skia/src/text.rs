@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::core::alignment;
 use crate::core::text::{Alignment, Ellipsis, Shaping, Wrapping};
 use crate::core::{Color, Font, Pixels, Point, Rectangle, Transformation};
@@ -28,7 +29,7 @@ impl Pipeline {
     // TODO: Shared engine
     #[allow(dead_code)]
     pub fn load_font(&mut self, bytes: Cow<'static, [u8]>) {
-        font_system()
+        let _ = font_system()
             .write()
             .expect("Write font system")
             .load_font(bytes);
@@ -199,8 +200,13 @@ fn draw(
 
     for run in buffer.layout_runs() {
         for glyph in run.glyphs {
+            // enzUI-ICED #3091: the baseline joins the glyph's own rounding,
+            // so two roundings cannot add up to a whole pixel of error.
             let physical_glyph = glyph.physical(
-                (position.x - scroll.horizontal, position.y),
+                (
+                    position.x - scroll.horizontal,
+                    position.y + run.line_y * transformation.scale_factor(),
+                ),
                 transformation.scale_factor(),
             );
 
@@ -219,8 +225,7 @@ fn draw(
 
                 pixels.draw_pixmap(
                     physical_glyph.x + placement.left,
-                    physical_glyph.y - placement.top
-                        + (run.line_y * transformation.scale_factor()).round() as i32,
+                    physical_glyph.y - placement.top,
                     pixmap,
                     &tiny_skia::PixmapPaint {
                         opacity,

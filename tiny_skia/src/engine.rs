@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::Primitive;
 use crate::core::renderer::Quad;
 use crate::core::{Background, Color, Gradient, Rectangle, Size, Transformation, Vector};
@@ -33,6 +34,13 @@ impl Engine {
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: &mut tiny_skia::Mask,
         clip_bounds: Rectangle,
+        // enzICED #41: when the enclosing layer has a rounded clip, `clip_mask`
+        // already holds the rounded region and MUST be applied even to a
+        // primitive that sits fully inside the rectangular bounding box (the
+        // usual `is_within` fast-path skips the mask, which would leak the
+        // corners). This flag forces the mask on. It does NOT rebuild the
+        // mask — the present loop set it to the rounded path before calling.
+        force_mask: bool,
     ) {
         let physical_bounds = quad.bounds * transformation;
 
@@ -128,7 +136,8 @@ impl Engine {
             }
         }
 
-        let clip_mask = (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask as &_);
+        let clip_mask =
+            (force_mask || !physical_bounds.is_within(&clip_bounds)).then_some(clip_mask as &_);
 
         pixels.fill_path(
             &path,
@@ -289,6 +298,10 @@ impl Engine {
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: &mut tiny_skia::Mask,
         clip_bounds: Rectangle,
+        // enzICED #41: see `draw_quad`. Stage 1 targets full-bleed quad/image
+        // content; text carries its own rectangular `clip_bounds` and is only
+        // OR-forced onto the rounded mask where it would otherwise skip it.
+        force_mask: bool,
     ) {
         match text {
             Text::Paragraph {
@@ -297,6 +310,9 @@ impl Engine {
                 color,
                 clip_bounds: local_clip_bounds,
                 transformation: local_transformation,
+                // enzICED #2219: the strong handle only keeps the buffer alive
+                // for a retained scene; drawing still resolves through `paragraph`.
+                retained: _,
             } => {
                 let transformation = transformation * *local_transformation;
                 let Some(clip_bounds) =
@@ -312,12 +328,13 @@ impl Engine {
                     return;
                 }
 
-                let clip_mask = match physical_bounds.is_within(&clip_bounds) {
-                    true => None,
-                    false => {
+                let clip_mask = if !force_mask && physical_bounds.is_within(&clip_bounds) {
+                    None
+                } else {
+                    if !force_mask {
                         adjust_clip_mask(clip_mask, clip_bounds);
-                        Some(clip_mask as &_)
                     }
+                    Some(clip_mask as &_)
                 };
 
                 self.text_pipeline.draw_paragraph(
@@ -344,7 +361,9 @@ impl Engine {
                     return;
                 };
 
-                adjust_clip_mask(clip_mask, clip_bounds);
+                if !force_mask {
+                    adjust_clip_mask(clip_mask, clip_bounds);
+                }
 
                 self.text_pipeline.draw_editor(
                     editor,
@@ -375,12 +394,13 @@ impl Engine {
                     return;
                 }
 
-                let clip_mask = match physical_bounds.is_within(&clip_bounds) {
-                    true => None,
-                    false => {
+                let clip_mask = if !force_mask && physical_bounds.is_within(&clip_bounds) {
+                    None
+                } else {
+                    if !force_mask {
                         adjust_clip_mask(clip_mask, clip_bounds);
-                        Some(clip_mask as &_)
                     }
+                    Some(clip_mask as &_)
                 };
 
                 self.text_pipeline.draw_cached(
@@ -402,9 +422,16 @@ impl Engine {
             }
             Text::Raw {
                 raw,
+                retained,
                 transformation: local_transformation,
             } => {
-                let Some(buffer) = raw.buffer.upgrade() else {
+                // A retained command owns its buffer; a per-frame one still
+                // borrows it from the widget (#2219).
+                let Some(buffer) = retained
+                    .as_ref()
+                    .map(|retained| retained.buffer().clone())
+                    .or_else(|| raw.buffer.upgrade())
+                else {
                     return;
                 };
 
@@ -423,8 +450,8 @@ impl Engine {
                     return;
                 }
 
-                let clip_mask =
-                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask as &_);
+                let clip_mask = (force_mask || !physical_bounds.is_within(&clip_bounds))
+                    .then_some(clip_mask as &_);
 
                 self.text_pipeline.draw_raw(
                     &buffer,
@@ -445,6 +472,8 @@ impl Engine {
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: &mut tiny_skia::Mask,
         clip_bounds: Rectangle,
+        // enzICED #41: see `draw_quad`.
+        force_mask: bool,
     ) {
         match primitive {
             Primitive::Fill { path, paint, rule } => {
@@ -463,8 +492,8 @@ impl Engine {
                     return;
                 }
 
-                let clip_mask =
-                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask as &_);
+                let clip_mask = (force_mask || !physical_bounds.is_within(&clip_bounds))
+                    .then_some(clip_mask as &_);
 
                 pixels.fill_path(
                     path,
@@ -494,8 +523,8 @@ impl Engine {
                     return;
                 }
 
-                let clip_mask =
-                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask as &_);
+                let clip_mask = (force_mask || !physical_bounds.is_within(&clip_bounds))
+                    .then_some(clip_mask as &_);
 
                 pixels.stroke_path(
                     path,
@@ -515,6 +544,10 @@ impl Engine {
         _pixels: &mut tiny_skia::PixmapMut<'_>,
         _clip_mask: &mut tiny_skia::Mask,
         _clip_bounds: Rectangle,
+        // enzICED #41: see `draw_quad`. When set, keep the rounded mask the
+        // present loop installed rather than overwriting it with a rectangular
+        // sub-clip.
+        _force_mask: bool,
     ) {
         match image {
             #[cfg(feature = "image")]
@@ -529,8 +562,30 @@ impl Engine {
                     return;
                 };
 
-                // TODO: Border radius
-                adjust_clip_mask(_clip_mask, clip_bounds);
+                // enzICED #41: a rounded layer clip is carried in `_clip_mask`
+                // already; do not flatten it back to a rectangle here.
+                if !_force_mask {
+                    adjust_clip_mask(_clip_mask, clip_bounds);
+                }
+
+                // The image's own radius rounds its visible bounds, clamped
+                // to half their shorter side, as the GPU path does (#3448).
+                let radius: [f32; 4] = image.border_radius.into();
+                let visible = *local_clip_bounds;
+                let rounded = (radius.iter().any(|r| *r > 0.0)
+                    && visible.width > 0.0
+                    && visible.height > 0.0)
+                    .then(|| {
+                        let limit = visible.width.min(visible.height) / 2.0;
+                        let mut mask = _clip_mask.clone();
+                        mask.intersect_path(
+                            &rounded_rectangle(visible, radius.map(|r| r.min(limit))),
+                            tiny_skia::FillRule::Winding,
+                            true,
+                            into_transform(_transformation),
+                        );
+                        mask
+                    });
 
                 let center = bounds.center();
                 let radians = f32::from(image.rotation);
@@ -548,7 +603,7 @@ impl Engine {
                     image.opacity,
                     _pixels,
                     transform,
-                    Some(_clip_mask),
+                    Some(rounded.as_ref().unwrap_or(_clip_mask)),
                 );
             }
             #[cfg(feature = "svg")]
@@ -559,8 +614,8 @@ impl Engine {
                     return;
                 }
 
-                let clip_mask =
-                    (!physical_bounds.is_within(&_clip_bounds)).then_some(_clip_mask as &_);
+                let clip_mask = (_force_mask || !physical_bounds.is_within(&_clip_bounds))
+                    .then_some(_clip_mask as &_);
 
                 let center = physical_bounds.center();
                 let radians = f32::from(svg.rotation);
@@ -787,4 +842,55 @@ pub fn adjust_clip_mask(clip_mask: &mut tiny_skia::Mask, bounds: Rectangle) {
         false,
         tiny_skia::Transform::default(),
     );
+}
+
+/// Sets `clip_mask` to a **rounded** rectangle: `bounds` with corner radii
+/// `border_radius` (enzICED #41).
+///
+/// This is the rounded-corner counterpart of [`adjust_clip_mask`]. It reuses
+/// the same `rounded_rectangle` path builder the quad renderer already uses,
+/// so a rounded clip layer masks its children to exactly the same arc a
+/// rounded quad of the same bounds/radius would paint. `border_radius` is in
+/// the same physical coordinate space as `bounds` (already scaled).
+///
+/// Antialiasing is enabled (unlike the hard rectangular mask) so the corner
+/// arc is smooth rather than stair-stepped.
+///
+/// The mask is cut to `visible`, the region being redrawn: the arc follows the
+/// full `bounds`, but a partial redraw must not paint past its damage
+/// (enzUI-ICED #3447).
+pub fn adjust_clip_mask_rounded(
+    clip_mask: &mut tiny_skia::Mask,
+    bounds: Rectangle,
+    border_radius: [f32; 4],
+    visible: Rectangle,
+) {
+    clip_mask.clear();
+
+    // Radii cannot exceed half the box in either axis, matching draw_quad.
+    let mut radius = border_radius;
+    for r in &mut radius {
+        *r = r.min(bounds.width / 2.0).min(bounds.height / 2.0).max(0.0);
+    }
+
+    let path = rounded_rectangle(bounds, radius);
+
+    clip_mask.fill_path(
+        &path,
+        tiny_skia::FillRule::EvenOdd,
+        true,
+        tiny_skia::Transform::default(),
+    );
+
+    if !bounds.is_within(&visible)
+        && let Some(rect) =
+            tiny_skia::Rect::from_xywh(visible.x, visible.y, visible.width, visible.height)
+    {
+        clip_mask.intersect_path(
+            &tiny_skia::PathBuilder::from_rect(rect),
+            tiny_skia::FillRule::EvenOdd,
+            false,
+            tiny_skia::Transform::default(),
+        );
+    }
 }

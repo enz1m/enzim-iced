@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 #![allow(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 pub mod window;
@@ -23,6 +24,8 @@ pub use iced_graphics::core;
 pub use layer::Layer;
 pub use primitive::Primitive;
 
+use layer::AlphaGroup;
+
 #[cfg(feature = "geometry")]
 pub use geometry::Geometry;
 
@@ -42,6 +45,49 @@ pub struct Renderer {
     settings: renderer::Settings,
     layers: layer::Stack,
     engine: Engine, // TODO: Shared engine
+    active_alpha_groups: Vec<AlphaGroup>,
+    layer_scopes: Vec<Option<AlphaGroup>>,
+    next_alpha_group: usize,
+}
+
+struct AlphaSurface {
+    group: AlphaGroup,
+    pixmap: tiny_skia::Pixmap,
+}
+
+fn composite_alpha_surface(surfaces: &mut Vec<AlphaSurface>, root: &mut tiny_skia::PixmapMut<'_>) {
+    let surface = surfaces.pop().expect("an alpha surface is active");
+
+    // Avoid touching the destination at all for the transparent endpoint. It
+    // is a byte-for-byte no-op, not merely visually equivalent.
+    if surface.group.alpha <= 0.0 {
+        return;
+    }
+
+    let paint = tiny_skia::PixmapPaint {
+        opacity: surface.group.alpha,
+        ..tiny_skia::PixmapPaint::default()
+    };
+
+    if let Some(parent) = surfaces.last_mut() {
+        parent.pixmap.as_mut().draw_pixmap(
+            0,
+            0,
+            surface.pixmap.as_ref(),
+            &paint,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    } else {
+        root.draw_pixmap(
+            0,
+            0,
+            surface.pixmap.as_ref(),
+            &paint,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
 }
 
 impl Renderer {
@@ -50,7 +96,16 @@ impl Renderer {
             settings,
             layers: layer::Stack::new(),
             engine: Engine::new(),
+            active_alpha_groups: Vec::new(),
+            layer_scopes: Vec::new(),
+            next_alpha_group: 0,
         }
+    }
+
+    fn tag_current_layer(&mut self) {
+        let groups = self.active_alpha_groups.clone();
+        let (layer, _) = self.layers.current_mut();
+        layer.alpha_groups = groups;
     }
 
     pub fn layers(&mut self) -> &[Layer] {
@@ -95,104 +150,262 @@ impl Renderer {
                 None,
             );
 
+            // Each active alpha group owns a transparent framebuffer. Layers
+            // render at full strength into the innermost framebuffer, then a
+            // completed group is blended once into its parent. This is what
+            // makes sibling overlap stable and nested alpha multiplicative.
+            let mut alpha_surfaces: Vec<AlphaSurface> = Vec::new();
+
             for layer in self.layers.iter() {
-                let Some(layer_bounds) = damage_bounds.intersection(&(layer.bounds * scale_factor))
-                else {
+                let common = alpha_surfaces
+                    .iter()
+                    .zip(&layer.alpha_groups)
+                    .take_while(|(surface, group)| surface.group.id == group.id)
+                    .count();
+
+                while alpha_surfaces.len() > common {
+                    composite_alpha_surface(&mut alpha_surfaces, pixels);
+                }
+
+                for &group in &layer.alpha_groups[common..] {
+                    alpha_surfaces.push(AlphaSurface {
+                        group,
+                        pixmap: tiny_skia::Pixmap::new(pixels.width(), pixels.height())
+                            .expect("Create alpha layer framebuffer"),
+                    });
+                }
+
+                let scaled_layer_bounds = layer.bounds * scale_factor;
+                let Some(layer_bounds) = damage_bounds.intersection(&scaled_layer_bounds) else {
                     continue;
                 };
 
-                engine::adjust_clip_mask(clip_mask, layer_bounds);
-
-                if !layer.quads.is_empty() {
-                    let render_span = debug::render(debug::Primitive::Quad);
-                    for (quad, background) in &layer.quads {
-                        self.engine.draw_quad(
-                            quad,
-                            background,
-                            Transformation::scale(scale_factor),
-                            pixels,
-                            clip_mask,
-                            layer_bounds,
-                        );
-                    }
-                    render_span.finish();
+                if let Some(surface) = alpha_surfaces.last_mut() {
+                    let mut target = surface.pixmap.as_mut();
+                    Self::draw_layer(
+                        &mut self.engine,
+                        layer,
+                        &mut target,
+                        clip_mask,
+                        scale_factor,
+                        scaled_layer_bounds,
+                        layer_bounds,
+                        damage_bounds,
+                    );
+                } else {
+                    Self::draw_layer(
+                        &mut self.engine,
+                        layer,
+                        pixels,
+                        clip_mask,
+                        scale_factor,
+                        scaled_layer_bounds,
+                        layer_bounds,
+                        damage_bounds,
+                    );
                 }
+            }
 
-                if !layer.primitives.is_empty() {
-                    let render_span = debug::render(debug::Primitive::Triangle);
-
-                    for group in &layer.primitives {
-                        let Some(group_bounds) =
-                            (group.clip_bounds() * scale_factor).intersection(&layer_bounds)
-                        else {
-                            continue;
-                        };
-
-                        engine::adjust_clip_mask(clip_mask, group_bounds);
-
-                        for primitive in group.as_slice() {
-                            self.engine.draw_primitive(
-                                primitive,
-                                Transformation::scale(scale_factor) * group.transformation(),
-                                pixels,
-                                clip_mask,
-                                group_bounds,
-                            );
-                        }
-
-                        engine::adjust_clip_mask(clip_mask, layer_bounds);
-                    }
-
-                    render_span.finish();
-                }
-
-                if !layer.images.is_empty() {
-                    let render_span = debug::render(debug::Primitive::Image);
-
-                    for image in &layer.images {
-                        self.engine.draw_image(
-                            image,
-                            Transformation::scale(scale_factor),
-                            pixels,
-                            clip_mask,
-                            layer_bounds,
-                        );
-                    }
-
-                    render_span.finish();
-                }
-
-                if !layer.text.is_empty() {
-                    let render_span = debug::render(debug::Primitive::Image);
-
-                    for group in &layer.text {
-                        for text in group.as_slice() {
-                            self.engine.draw_text(
-                                text,
-                                Transformation::scale(scale_factor) * group.transformation(),
-                                pixels,
-                                clip_mask,
-                                layer_bounds,
-                            );
-                        }
-                    }
-
-                    render_span.finish();
-                }
+            while !alpha_surfaces.is_empty() {
+                composite_alpha_surface(&mut alpha_surfaces, pixels);
             }
         }
 
         self.engine.trim();
+    }
+
+    fn draw_layer(
+        engine: &mut Engine,
+        layer: &Layer,
+        pixels: &mut tiny_skia::PixmapMut<'_>,
+        clip_mask: &mut tiny_skia::Mask,
+        scale_factor: f32,
+        scaled_layer_bounds: Rectangle,
+        layer_bounds: Rectangle,
+        // The region being redrawn, which was cleared to the background.
+        damage_bounds: Rectangle,
+    ) {
+        // enzICED #41: a rounded clip layer masks to the corner arc of its
+        // FULL (scaled) bounds, not the damage-cropped rectangle — otherwise
+        // partial-damage repaints would move the arc. `force_mask` keeps it on
+        // primitives inside the rectangular fast path.
+        //
+        // enzICED #319: radius and bounds are both stored in logical
+        // coordinates, so both must receive the same viewport scale. Passing
+        // an unscaled radius alongside scaled bounds visibly squares the arc on
+        // HiDPI and disagrees with wgpu's `clip_region_of` conversion.
+        let rounded_clip = layer
+            .clip_radius
+            .filter(|r| {
+                r.top_left > 0.0 || r.top_right > 0.0 || r.bottom_right > 0.0 || r.bottom_left > 0.0
+            })
+            .map(|radius| radius * scale_factor);
+        let force_mask = rounded_clip.is_some();
+
+        if let Some(radius) = rounded_clip {
+            engine::adjust_clip_mask_rounded(
+                clip_mask,
+                scaled_layer_bounds,
+                radius.into(),
+                damage_bounds,
+            );
+        } else {
+            engine::adjust_clip_mask(clip_mask, layer_bounds);
+        }
+
+        if !layer.quads.is_empty() {
+            let render_span = debug::render(debug::Primitive::Quad);
+            for (quad, background) in &layer.quads {
+                engine.draw_quad(
+                    quad,
+                    background,
+                    Transformation::scale(scale_factor),
+                    pixels,
+                    clip_mask,
+                    layer_bounds,
+                    force_mask,
+                );
+            }
+            render_span.finish();
+        }
+
+        if !layer.primitives.is_empty() {
+            let render_span = debug::render(debug::Primitive::Triangle);
+
+            for group in &layer.primitives {
+                let Some(group_bounds) =
+                    (group.clip_bounds() * scale_factor).intersection(&layer_bounds)
+                else {
+                    continue;
+                };
+
+                // A primitive group's rectangular sub-clip would overwrite a
+                // rounded layer mask. Re-install the rounded mask instead;
+                // `force_mask` then keeps it applied (#41 stage 3).
+                if let Some(radius) = rounded_clip {
+                    engine::adjust_clip_mask_rounded(
+                        clip_mask,
+                        scaled_layer_bounds,
+                        radius.into(),
+                        damage_bounds,
+                    );
+                } else {
+                    engine::adjust_clip_mask(clip_mask, group_bounds);
+                }
+
+                for primitive in group.as_slice() {
+                    engine.draw_primitive(
+                        primitive,
+                        Transformation::scale(scale_factor) * group.transformation(),
+                        pixels,
+                        clip_mask,
+                        group_bounds,
+                        force_mask,
+                    );
+                }
+
+                if rounded_clip.is_none() {
+                    engine::adjust_clip_mask(clip_mask, layer_bounds);
+                }
+            }
+
+            render_span.finish();
+        }
+
+        if !layer.images.is_empty() {
+            let render_span = debug::render(debug::Primitive::Image);
+
+            for image in &layer.images {
+                engine.draw_image(
+                    image,
+                    Transformation::scale(scale_factor),
+                    pixels,
+                    clip_mask,
+                    layer_bounds,
+                    force_mask,
+                );
+            }
+
+            render_span.finish();
+        }
+
+        if !layer.text.is_empty() {
+            let render_span = debug::render(debug::Primitive::Image);
+
+            for group in &layer.text {
+                for text in group.as_slice() {
+                    engine.draw_text(
+                        text,
+                        Transformation::scale(scale_factor) * group.transformation(),
+                        pixels,
+                        clip_mask,
+                        layer_bounds,
+                        force_mask,
+                    );
+                }
+            }
+
+            render_span.finish();
+        }
     }
 }
 
 impl core::Renderer for Renderer {
     fn start_layer(&mut self, bounds: Rectangle) {
         self.layers.push_clip(bounds);
+        self.tag_current_layer();
+        self.layer_scopes.push(None);
+    }
+
+    fn start_layer_alpha(&mut self, bounds: Rectangle, alpha: f32) {
+        self.layers.push_clip(bounds);
+
+        // Non-finite alpha is treated as the backwards-compatible opaque
+        // endpoint. Values outside the documented range are clamped.
+        let alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        // The opaque endpoint intentionally takes the old direct-render path,
+        // which guarantees byte identity instead of relying on a round trip
+        // through a transparent framebuffer.
+        let group = (alpha < 1.0).then(|| {
+            let group = AlphaGroup {
+                id: self.next_alpha_group,
+                alpha,
+            };
+            self.next_alpha_group += 1;
+            self.active_alpha_groups.push(group);
+            group
+        });
+
+        self.tag_current_layer();
+        self.layer_scopes.push(group);
+    }
+
+    // enzICED #41: tiny_skia honours rounded clipping for real — it records the
+    // radius on the layer, and the present pass masks the corners with
+    // `adjust_clip_mask_rounded`.
+    fn start_layer_rounded(&mut self, bounds: Rectangle, radius: core::border::Radius) {
+        self.layers.push_clip_rounded(bounds, radius);
+        self.tag_current_layer();
+        self.layer_scopes.push(None);
     }
 
     fn end_layer(&mut self) {
         self.layers.pop_clip();
+
+        if let Some(group) = self.layer_scopes.pop().expect("a layer scope is active") {
+            let popped = self
+                .active_alpha_groups
+                .pop()
+                .expect("an alpha group is active");
+            debug_assert_eq!(popped.id, group.id);
+        }
+        self.layers.split_clip_continuation();
+        self.tag_current_layer();
     }
 
     fn start_transformation(&mut self, transformation: Transformation) {
@@ -231,8 +444,18 @@ impl core::Renderer for Renderer {
         None
     }
 
+    fn current_transformation(&self) -> Transformation {
+        // The layer stack composes every pushed transformation onto its
+        // parent, so `transformation()` is already the cumulative transform
+        // in effect (enzICED #46).
+        self.layers.transformation()
+    }
+
     fn reset(&mut self, new_bounds: Rectangle) {
         self.layers.reset(new_bounds);
+        self.active_alpha_groups.clear();
+        self.layer_scopes.clear();
+        self.next_alpha_group = 0;
     }
 
     fn settings(&self) -> renderer::Settings {
