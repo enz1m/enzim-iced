@@ -35,8 +35,8 @@ accessibility should enable `a11y` and `tokio` and copy the overrides from
 All external fork sources are public and pinned to full Git revisions. The
 software-rendering alpha fix is bundled under `vendor/softbuffer` with its licenses.
 
-This is a Gitea review preview for a planned GitHub fork. It has not been
-published on GitHub. Package repository metadata names the planned destination.
+The source fork is published at [enz1m/enzim-iced](https://github.com/enz1m/enzim-iced).
+The reviewed Gitea source history is retained unchanged.
 
 ## License
 

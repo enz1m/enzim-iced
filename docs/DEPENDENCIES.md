@@ -16,14 +16,14 @@ commit your application's Cargo.lock.
 The source dependency on softbuffer 0.4.8 is internal to this checkout, so its
 Wayland alpha fix reaches applications without a sibling checkout.
 
-## Gitea preview consumer
+## GitHub consumer
 
-Replace `FULL_ICED_COMMIT` with the full revision you reviewed. The preview
-branch is `enzim`; avoid depending on that moving branch in an application.
+The example pins the reviewed source revision. The default branch is `enzim`;
+avoid depending on that moving branch in an application.
 
 ```toml
 [dependencies]
-iced = { git = "http://192.168.2.86:3048/agent_c/enzim-iced.git", rev = "FULL_ICED_COMMIT", features = ["a11y", "tokio"] }
+iced = { git = "https://github.com/enz1m/enzim-iced.git", rev = "2f08824dbbac9c38278f341673ad41fefbb9a667", features = ["a11y", "tokio"] }
 ```
 
 ## Workspace overrides
@@ -53,6 +53,7 @@ URL creates a distinct Rust crate even when the version numbers match.
 Accessibility uses AccessKit's Tokio worker. The default `async-io` runtime
 must not be enabled for `accesskit_unix` alongside `tokio`.
 
-For the future GitHub publication only the iced Git URL changes to
-`https://github.com/enz1m/enzim-iced.git`; use its reviewed published revision.
-No Github iced repository has been created for this preview.
+The Gitea mirror remains available at
+`http://192.168.2.86:3048/agent_c/enzim-iced.git`. Prefer the GitHub URL in
+public projects and keep every direct iced workspace dependency on one URL
+and revision.

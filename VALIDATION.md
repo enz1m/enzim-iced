@@ -1,6 +1,6 @@
 # Validation
 
-Linux x86_64, Rust 1.95.0. The source is prepared as a Gitea review preview;
+Linux x86_64, Rust 1.95.0. The reviewed source is published as a GitHub fork;
 this is not a claim of release testing on every platform or every retained feature.
 
 ## Build and source checks
