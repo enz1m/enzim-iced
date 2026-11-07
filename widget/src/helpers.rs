@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Helper functions to create pure widgets.
 use crate::button::{self, Button};
 use crate::checkbox::{self, Checkbox};
@@ -1426,15 +1427,18 @@ where
 ///     }
 /// }
 /// ```
-pub fn text_input<'a, Message, Theme>(
-    placeholder: impl text::IntoFragment<'a>,
-    value: impl text::IntoFragment<'a>,
-) -> TextInput<'a, Message, Theme>
+///
+/// Fork: `TextInput` copies both strings, so they need not outlive it.
+pub fn text_input<'a, 'b, Message, Theme, Renderer>(
+    placeholder: impl text::IntoFragment<'b>,
+    value: impl text::IntoFragment<'b>,
+) -> TextInput<'a, Message, Theme, Renderer>
 where
     Message: Clone,
     Theme: text_input::Catalog + 'a,
+    Renderer: core::text::Renderer,
 {
-    TextInput::new(placeholder, value)
+    TextInput::new(&placeholder.into_fragment(), &value.into_fragment())
 }
 
 /// Creates a new [`TextEditor`].
@@ -1711,17 +1715,18 @@ where
 ///     }
 /// }
 /// ```
-pub fn combo_box<'a, T, Message, Theme>(
+pub fn combo_box<'a, T, Message, Theme, Renderer>(
     state: &'a combo_box::State<T>,
     placeholder: impl text::IntoFragment<'a>,
     selection: Option<&T>,
     on_selected: impl Fn(T) -> Message + 'a,
-) -> ComboBox<'a, T, Message, Theme>
+) -> ComboBox<'a, T, Message, Theme, Renderer>
 where
     T: std::fmt::Display + Clone,
     Theme: combo_box::Catalog + 'a,
+    Renderer: core::text::Renderer,
 {
-    ComboBox::new(state, placeholder, selection, on_selected)
+    ComboBox::new(state, &placeholder.into_fragment(), selection, on_selected)
 }
 
 /// Creates some empty [`Space`] with no size.

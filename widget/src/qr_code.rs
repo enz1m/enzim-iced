@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! QR codes display information in a type of two-dimensional matrix barcode.
 //!
 //! # Example
@@ -31,6 +32,7 @@ use crate::core::{
 };
 
 use std::cell::RefCell;
+use std::sync::Arc;
 use thiserror::Error;
 
 const DEFAULT_CELL_SIZE: f32 = 4.0;
@@ -156,14 +158,19 @@ where
         let style = theme.style(&self.class);
         let mut last_style = state.last_style.borrow_mut();
 
-        if Some(style) != *last_style {
-            self.data.cache.clear();
+        let mut last_contents = state.last_contents.borrow_mut();
+        let same_contents = last_contents
+            .as_ref()
+            .is_some_and(|contents| Arc::ptr_eq(contents, &self.data.contents));
 
+        if Some(style) != *last_style || !same_contents {
+            state.cache.clear();
             *last_style = Some(style);
+            *last_contents = Some(Arc::clone(&self.data.contents));
         }
 
         // Reuse cache if possible
-        let geometry = self.data.cache.draw(renderer, bounds.size(), |frame| {
+        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
             // Scale units to cell size
             frame.scale(self.cell_size);
 
@@ -217,9 +224,8 @@ where
 /// It stores the contents that will be displayed.
 #[derive(Debug)]
 pub struct Data {
-    contents: Vec<qrcode::Color>,
+    contents: Arc<[qrcode::Color]>,
     width: usize,
-    cache: canvas::Cache<Renderer>,
 }
 
 impl Data {
@@ -257,13 +263,9 @@ impl Data {
 
     fn build(encoded: qrcode::QrCode) -> Self {
         let width = encoded.width();
-        let contents = encoded.into_colors();
+        let contents = encoded.into_colors().into();
 
-        Self {
-            contents,
-            width,
-            cache: canvas::Cache::new(),
-        }
+        Self { contents, width }
     }
 }
 
@@ -366,7 +368,10 @@ impl From<qrcode::types::QrError> for Error {
 
 #[derive(Default)]
 struct State {
+    // Each widget owns GPU storage; shared payloads must not replace pending geometry.
+    cache: canvas::Cache<Renderer>,
     last_style: RefCell<Option<Style>>,
+    last_contents: RefCell<Option<Arc<[qrcode::Color]>>>,
 }
 
 /// The appearance of a QR code.

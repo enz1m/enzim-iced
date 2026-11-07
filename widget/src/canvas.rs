@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Canvases can be leveraged to draw interactive 2D graphics.
 //!
 //! # Example: Drawing a Simple Circle
@@ -201,6 +202,11 @@ where
             width: self.width,
             height: self.height,
         }
+    }
+
+    fn frame_interest(&self, tree: &Tree) -> bool {
+        self.program
+            .frame_interest(tree.state.downcast_ref::<P::State>())
     }
 
     fn layout(&mut self, tree: &mut Tree, _renderer: &Renderer, limits: &layout::Limits) {

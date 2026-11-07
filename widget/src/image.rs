@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Images display raster graphics in different formats (PNG, JPG, etc.).
 //!
 //! # Example
@@ -25,9 +26,7 @@ use crate::core::layout;
 use crate::core::mouse;
 use crate::core::renderer;
 use crate::core::widget::Tree;
-use crate::core::{
-    ContentFit, Element, Layout, Length, Point, Rectangle, Rotation, Size, Vector, Widget,
-};
+use crate::core::{ContentFit, Element, Layout, Length, Rectangle, Rotation, Size, Widget};
 
 pub use image::{FilterMethod, Handle};
 
@@ -192,33 +191,50 @@ pub fn layout<Renderer, Handle>(
 where
     Renderer: image::Renderer<Handle = Handle>,
 {
-    // The raw w/h of the underlying image
-    let image_size = crop(renderer.measure_image(handle).unwrap_or_default(), region);
+    layout_node(
+        renderer,
+        limits,
+        handle,
+        width,
+        height,
+        region,
+        content_fit,
+        rotation,
+        expand,
+    )
+    .size()
+}
 
-    // The rotated size of the image
-    let rotated_size = rotation.apply(image_size);
-
-    // The size to be available to the widget prior to `Shrink`ing
-    let bounds = if expand {
-        limits.width(width).height(height).bounds()
-    } else {
-        limits.resolve(width, height, rotated_size)
+/// Computes the [`layout::Node`] of an [`Image`], declaring its owned media
+/// presentation (enzICED).
+#[allow(clippy::too_many_arguments)]
+pub fn layout_node<Renderer, Handle>(
+    renderer: &Renderer,
+    limits: &layout::Limits,
+    handle: &Handle,
+    width: Length,
+    height: Length,
+    region: Option<Rectangle<u32>>,
+    content_fit: ContentFit,
+    rotation: Rotation,
+    expand: bool,
+) -> layout::Node
+where
+    Renderer: image::Renderer<Handle = Handle>,
+{
+    let media = layout::media::Media {
+        source: renderer.measure_image(handle).unwrap_or_default(),
+        sizing: Size::new(width, height),
+        crop: region,
+        fit: content_fit,
+        rotation,
+        expand,
     };
-
-    // The uncropped size of the image when fit to the bounds above
-    let full_size = content_fit.fit(rotated_size, bounds);
-
-    // Shrink the widget to fit the resized image, if requested
-    Size {
-        width: match width {
-            Length::Shrink => f32::min(bounds.width, full_size.width),
-            _ => bounds.width,
-        },
-        height: match height {
-            Length::Shrink => f32::min(bounds.height, full_size.height),
-            _ => bounds.height,
-        },
-    }
+    layout::Node::new(media.allocation(limits)).with_media_presentation(
+        *limits,
+        media,
+        renderer::presentation::MediaKind::Raster,
+    )
 }
 
 fn drawing_bounds<Renderer, Handle>(
@@ -233,78 +249,22 @@ fn drawing_bounds<Renderer, Handle>(
 where
     Renderer: image::Renderer<Handle = Handle>,
 {
-    let original_size = renderer.measure_image(handle).unwrap_or_default();
-    let image_size = crop(original_size, region);
-    let rotated_size = rotation.apply(image_size);
-    let adjusted_fit = content_fit.fit(rotated_size, bounds.size());
-
-    let fit_scale = Vector::new(
-        adjusted_fit.width / rotated_size.width,
-        adjusted_fit.height / rotated_size.height,
-    );
-
-    let final_size = image_size * fit_scale * scale;
-
-    let (crop_offset, final_size) = if let Some(region) = region {
-        let x = region.x.min(original_size.width) as f32;
-        let y = region.y.min(original_size.height) as f32;
-        let width = image_size.width;
-        let height = image_size.height;
-
-        let ratio = Vector::new(
-            original_size.width as f32 / width,
-            original_size.height as f32 / height,
-        );
-
-        let final_size = final_size * ratio;
-
-        let scale = Vector::new(
-            final_size.width / original_size.width as f32,
-            final_size.height / original_size.height as f32,
-        );
-
-        let offset = match content_fit {
-            ContentFit::None => Vector::new(x * scale.x, y * scale.y),
-            _ => Vector::new(
-                ((original_size.width as f32 - width) / 2.0 - x) * scale.x,
-                ((original_size.height as f32 - height) / 2.0 - y) * scale.y,
-            ),
-        };
-
-        (offset, final_size)
-    } else {
-        (Vector::ZERO, final_size)
-    };
-
-    let position = match content_fit {
-        ContentFit::None => Point::new(
-            bounds.x + (rotated_size.width - adjusted_fit.width) / 2.0,
-            bounds.y + (rotated_size.height - adjusted_fit.height) / 2.0,
-        ),
-        _ => Point::new(
-            bounds.center_x() - final_size.width / 2.0,
-            bounds.center_y() - final_size.height / 2.0,
-        ),
-    };
-
-    Rectangle::new(position + crop_offset, final_size)
-}
-
-fn crop(size: Size<u32>, region: Option<Rectangle<u32>>) -> Size<f32> {
-    if let Some(region) = region {
-        Size::new(
-            region.width.min(size.width) as f32,
-            region.height.min(size.height) as f32,
-        )
-    } else {
-        Size::new(size.width as f32, size.height as f32)
+    layout::media::Media {
+        source: renderer.measure_image(handle).unwrap_or_default(),
+        sizing: Size::new(Length::Shrink, Length::Shrink),
+        crop: region,
+        fit: content_fit,
+        rotation,
+        expand: false,
     }
+    .drawing_bounds(bounds, scale)
 }
 
 /// Draws an [`Image`]
 pub fn draw<Renderer, Handle>(
     renderer: &mut Renderer,
     layout: Layout,
+    tree: &Tree,
     handle: &Handle,
     crop: Option<Rectangle<u32>>,
     border_radius: border::Radius,
@@ -318,10 +278,18 @@ pub fn draw<Renderer, Handle>(
     Handle: Clone,
 {
     let bounds = layout.bounds();
+    if (bounds.width == 0.0 || bounds.height == 0.0)
+        && !tree
+            .media_presentation_node()
+            .is_some_and(|node| renderer.retains_layout_leaf(node))
+    {
+        return;
+    }
     let drawing_bounds =
         drawing_bounds(renderer, bounds, handle, crop, content_fit, rotation, scale);
 
-    renderer.draw_image(
+    renderer.draw_layout_image(
+        tree.media_presentation_node(),
         image::Image {
             handle: handle.clone(),
             border_radius,
@@ -331,6 +299,7 @@ pub fn draw<Renderer, Handle>(
         },
         drawing_bounds,
         bounds,
+        scale,
     );
 }
 
@@ -347,7 +316,7 @@ where
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
-        tree.size = layout(
+        layout_node(
             renderer,
             limits,
             &self.handle,
@@ -357,12 +326,13 @@ where
             self.content_fit,
             self.rotation,
             self.expand,
-        );
+        )
+        .apply(tree);
     }
 
     fn draw(
         &self,
-        _tree: &Tree,
+        tree: &Tree,
         renderer: &mut Renderer,
         _theme: &Theme,
         _style: &renderer::Style,
@@ -373,6 +343,7 @@ where
         draw(
             renderer,
             layout,
+            tree,
             &self.handle,
             self.crop,
             self.border_radius,

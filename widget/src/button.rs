@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Buttons allow your users to perform actions by pressing them.
 //!
 //! # Example
@@ -213,6 +214,12 @@ struct State {
     is_pressed: bool,
 }
 
+impl tree::Interactive for State {
+    fn cancel_interaction(&mut self) {
+        self.is_pressed = false;
+    }
+}
+
 impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Button<'a, Message, Theme, Renderer>
 where
@@ -225,7 +232,7 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::default())
+        tree::State::interactive(State::default())
     }
 
     fn diff(&mut self, tree: &mut Tree) {
@@ -379,7 +386,9 @@ where
         let style = theme.style(&self.class, self.status.unwrap_or(Status::Disabled));
 
         if style.background.is_some() || style.border.width > 0.0 || style.shadow.color.a > 0.0 {
-            renderer.fill_quad(
+            layout.fill_presentation_quad(
+                tree,
+                renderer,
                 renderer::Quad {
                     bounds,
                     border: style.border,

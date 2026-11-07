@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! A container for capturing mouse events.
 use crate::core::layout;
 use crate::core::mouse;
@@ -5,12 +6,14 @@ use crate::core::overlay;
 use crate::core::renderer;
 use crate::core::touch;
 use crate::core::widget::{Operation, Tree, tree};
+use crate::core::window;
 use crate::core::{Element, Event, Layout, Length, Point, Rectangle, Shell, Size, Vector, Widget};
 
 /// Emit messages on mouse events.
 pub struct MouseArea<'a, Message, Theme = crate::Theme, Renderer = crate::Renderer> {
     content: Element<'a, Message, Theme, Renderer>,
     on_press: Option<Message>,
+    on_press_with: Option<Box<dyn Fn() -> Message + 'a>>,
     on_release: Option<Message>,
     on_double_click: Option<Message>,
     on_right_press: Option<Message>,
@@ -21,6 +24,9 @@ pub struct MouseArea<'a, Message, Theme = crate::Theme, Renderer = crate::Render
     on_enter: Option<Message>,
     on_move: Option<Box<dyn Fn(Point) -> Message + 'a>>,
     on_exit: Option<Message>,
+    on_press_at: Option<Box<dyn Fn(Point) -> Message + 'a>>,
+    on_drag: Option<Box<dyn Fn(Point) -> Message + 'a>>,
+    on_move_coalesced: Option<Box<dyn Fn(Point) -> Message + 'a>>,
     interaction: Option<mouse::Interaction>,
 }
 
@@ -29,6 +35,55 @@ impl<'a, Message, Theme, Renderer> MouseArea<'a, Message, Theme, Renderer> {
     #[must_use]
     pub fn on_press(mut self, message: Message) -> Self {
         self.on_press = Some(message);
+        self
+    }
+
+    /// The message to emit on a left button press, produced **lazily** at the
+    /// moment of the press rather than pre-computed when the widget is built.
+    ///
+    /// Prefer this over [`on_press`](Self::on_press) when the message is
+    /// derived from per-item state (a list-row index, a tree-node id): the
+    /// closure runs once per real press, so rebuilding the view does not
+    /// re-evaluate it. Mirrors `Button::on_press_with`.
+    ///
+    /// If both are set, `on_press_with` takes precedence.
+    #[must_use]
+    pub fn on_press_with(mut self, message: impl Fn() -> Message + 'a) -> Self {
+        self.on_press_with = Some(Box::new(message));
+        self
+    }
+
+    /// The message to emit on a left button press, made from the press
+    /// position relative to the area (enzICED).
+    ///
+    /// Takes precedence over [`on_press_with`](Self::on_press_with) and
+    /// [`on_press`](Self::on_press).
+    #[must_use]
+    pub fn on_press_at(mut self, message: impl Fn(Point) -> Message + 'a) -> Self {
+        self.on_press_at = Some(Box::new(message));
+        self
+    }
+
+    /// The message to emit for each pointer move while a left press that
+    /// began in the area is held, with the position relative to the area
+    /// (enzICED).
+    ///
+    /// Unlike [`on_move`](Self::on_move), hovering emits nothing; the position
+    /// may lie outside the area once the drag leaves it.
+    #[must_use]
+    pub fn on_drag(mut self, message: impl Fn(Point) -> Message + 'a) -> Self {
+        self.on_drag = Some(Box::new(message));
+        self
+    }
+
+    /// The message to emit for the latest pointer position in the area, at
+    /// most once per presented frame (enzICED).
+    ///
+    /// A pointer can report a thousand moves a second, each an application
+    /// update; this publishes the position the next frame would show.
+    #[must_use]
+    pub fn on_move_coalesced(mut self, message: impl Fn(Point) -> Message + 'a) -> Self {
+        self.on_move_coalesced = Some(Box::new(message));
         self
     }
 
@@ -123,6 +178,8 @@ impl<'a, Message, Theme, Renderer> MouseArea<'a, Message, Theme, Renderer> {
 #[derive(Default)]
 struct State {
     is_hovered: bool,
+    dragging: bool,
+    pending_move: Option<Point>,
     bounds: Rectangle,
     cursor_position: Option<Point>,
     previous_click: Option<mouse::Click>,
@@ -134,6 +191,7 @@ impl<'a, Message, Theme, Renderer> MouseArea<'a, Message, Theme, Renderer> {
         MouseArea {
             content: content.into(),
             on_press: None,
+            on_press_with: None,
             on_release: None,
             on_double_click: None,
             on_right_press: None,
@@ -144,6 +202,9 @@ impl<'a, Message, Theme, Renderer> MouseArea<'a, Message, Theme, Renderer> {
             on_enter: None,
             on_move: None,
             on_exit: None,
+            on_press_at: None,
+            on_drag: None,
+            on_move_coalesced: None,
             interaction: None,
         }
     }
@@ -176,7 +237,7 @@ where
             .as_widget_mut()
             .layout(&mut tree.children[0], renderer, limits);
 
-        tree.size = tree.children[0].size;
+        crate::core::layout::pass_through(tree, 0);
     }
 
     fn operate(
@@ -317,12 +378,55 @@ fn update<Message: Clone, Theme, Renderer>(
     let cursor_position = cursor.position();
     let bounds = layout.bounds();
 
+    if matches!(
+        event,
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            | Event::Touch(touch::Event::FingerLifted { .. } | touch::Event::FingerLost { .. })
+    ) {
+        state.dragging = false;
+    }
+
+    if state.dragging
+        && state.cursor_position != cursor_position
+        && let (Some(on_drag), Some(position)) = (widget.on_drag.as_ref(), cursor_position)
+    {
+        shell.publish(on_drag(Point::new(
+            position.x - bounds.x,
+            position.y - bounds.y,
+        )));
+    }
+
+    // A press, release or scroll is reported after the move that led to it.
+    let flushes = matches!(
+        event,
+        Event::Window(window::Event::RedrawRequested(_))
+            | Event::Mouse(
+                mouse::Event::ButtonPressed(_)
+                    | mouse::Event::ButtonReleased(_)
+                    | mouse::Event::WheelScrolled { .. }
+            )
+            | Event::Touch(_)
+    );
+    if flushes
+        && let (Some(on_move), Some(position)) =
+            (widget.on_move_coalesced.as_ref(), state.pending_move.take())
+    {
+        shell.publish(on_move(position));
+    }
+
     if state.cursor_position != cursor_position || state.bounds != bounds {
         let was_hovered = state.is_hovered;
 
         state.is_hovered = cursor.is_over(layout.bounds());
         state.cursor_position = cursor_position;
         state.bounds = bounds;
+
+        if widget.on_move_coalesced.is_some()
+            && let Some(position) = cursor.position_in(bounds)
+            && state.pending_move.replace(position).is_none()
+        {
+            shell.request_redraw();
+        }
 
         match (
             widget.on_enter.as_ref(),
@@ -351,7 +455,16 @@ fn update<Message: Clone, Theme, Renderer>(
     match event {
         Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
         | Event::Touch(touch::Event::FingerPressed { .. }) => {
-            if let Some(message) = widget.on_press.as_ref() {
+            state.dragging = widget.on_drag.is_some();
+            if let (Some(make), Some(position)) =
+                (widget.on_press_at.as_ref(), cursor.position_in(bounds))
+            {
+                shell.publish(make(position));
+                shell.capture_event();
+            } else if let Some(make) = widget.on_press_with.as_ref() {
+                shell.publish(make());
+                shell.capture_event();
+            } else if let Some(message) = widget.on_press.as_ref() {
                 shell.publish(message.clone());
                 shell.capture_event();
             }

@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Rules divide space horizontally or vertically.
 //!
 //! # Example
@@ -120,7 +121,7 @@ where
     fn layout(&mut self, tree: &mut Tree, _renderer: &Renderer, limits: &layout::Limits) {
         let size = <Self as Widget<(), Theme, Renderer>>::size(self);
 
-        tree.size = layout::atomic(limits, size.width, size.height);
+        layout::paint_box(limits, size.width, size.height).apply(tree);
     }
 
     fn draw(
@@ -136,47 +137,24 @@ where
         let bounds = layout.bounds();
         let style = theme.style(&self.class);
 
-        let mut bounds = if self.is_vertical {
-            let line_x = bounds.x;
-
-            let (offset, line_height) = style.fill_mode.fill(bounds.height);
-            let line_y = bounds.y + offset;
-
-            Rectangle {
-                x: line_x,
-                y: line_y,
-                width: bounds.width,
-                height: line_height,
-            }
-        } else {
-            let line_y = bounds.y;
-
-            let (offset, line_width) = style.fill_mode.fill(bounds.width);
-            let line_x = bounds.x + offset;
-
-            Rectangle {
-                x: line_x,
-                y: line_y,
-                width: line_width,
-                height: bounds.height,
-            }
+        let paint = layout::rule::Paint {
+            vertical: self.is_vertical,
+            fill: style.fill_mode,
+            snap: style.snap,
         };
+        let bounds = paint.bounds(bounds, renderer.hint_factor().unwrap_or(1.0));
 
-        if style.snap {
-            let unit = 1.0 / renderer.hint_factor().unwrap_or(1.0);
-
-            bounds.width = bounds.width.max(unit);
-            bounds.height = bounds.height.max(unit);
-        }
-
-        renderer.fill_quad(
+        layout.fill_presentation_rule(
+            _tree,
+            renderer,
             renderer::Quad {
                 bounds,
                 border: border::rounded(style.radius),
                 snap: style.snap,
                 ..renderer::Quad::default()
             },
-            style.color,
+            style.color.into(),
+            paint,
         );
     }
 }
@@ -205,69 +183,7 @@ pub struct Style {
     pub snap: bool,
 }
 
-/// The fill mode of a rule.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FillMode {
-    /// Fill the whole length of the container.
-    Full,
-    /// Fill a percent of the length of the container. The rule
-    /// will be centered in that container.
-    ///
-    /// The range is `[0.0, 100.0]`.
-    Percent(f32),
-    /// Uniform offset from each end, length units.
-    Padded(u16),
-    /// Different offset on each end of the rule, length units.
-    /// First = top or left.
-    AsymmetricPadding(u16, u16),
-}
-
-impl FillMode {
-    /// Return the starting offset and length of the rule.
-    ///
-    /// * `space` - The space to fill.
-    ///
-    /// # Returns
-    ///
-    /// * (`starting_offset`, `length`)
-    pub fn fill(&self, space: f32) -> (f32, f32) {
-        match *self {
-            FillMode::Full => (0.0, space),
-            FillMode::Percent(percent) => {
-                if percent >= 100.0 {
-                    (0.0, space)
-                } else {
-                    let percent_width = (space * percent / 100.0).round();
-
-                    (((space - percent_width) / 2.0).round(), percent_width)
-                }
-            }
-            FillMode::Padded(padding) => {
-                if padding == 0 {
-                    (0.0, space)
-                } else {
-                    let padding = padding as f32;
-                    let mut line_width = space - (padding * 2.0);
-                    if line_width < 0.0 {
-                        line_width = 0.0;
-                    }
-
-                    (padding, line_width)
-                }
-            }
-            FillMode::AsymmetricPadding(first_pad, second_pad) => {
-                let first_pad = first_pad as f32;
-                let second_pad = second_pad as f32;
-                let mut line_width = space - first_pad - second_pad;
-                if line_width < 0.0 {
-                    line_width = 0.0;
-                }
-
-                (first_pad, line_width)
-            }
-        }
-    }
-}
+pub use crate::core::layout::rule::FillMode;
 
 /// The theme catalog of a [`Rule`].
 pub trait Catalog: Sized {

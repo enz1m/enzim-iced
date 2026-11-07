@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Combo boxes display a dropdown list of searchable and selectable options.
 //!
 //! # Example
@@ -61,20 +62,17 @@ use crate::core::mouse;
 use crate::core::overlay;
 use crate::core::renderer;
 use crate::core::text;
-use crate::core::text::editor;
-use crate::core::text::input;
-use crate::core::widget::operation::Focusable as _;
+use crate::core::time::Instant;
 use crate::core::widget::{self, Widget};
-use crate::core::window;
 use crate::core::{
     Element, Event, Font, Length, Padding, Pixels, Rectangle, Shell, Size, Theme, Vector,
 };
-use crate::overlay::menu::{self, Menu};
+use crate::overlay::menu;
 use crate::text::LineHeight;
-use crate::text_input;
+use crate::text_input::{self, TextInput};
 
+use std::cell::RefCell;
 use std::fmt::Display;
-use std::sync::atomic::{self, AtomicU64};
 
 /// A widget for searching and selecting a single value from a list of options.
 ///
@@ -132,54 +130,54 @@ use std::sync::atomic::{self, AtomicU64};
 ///     }
 /// }
 /// ```
-pub struct ComboBox<'a, T, Message, Theme = crate::Theme>
+pub struct ComboBox<'a, T, Message, Theme = crate::Theme, Renderer = crate::Renderer>
 where
     Theme: Catalog,
+    Renderer: text::Renderer,
 {
     state: &'a State<T>,
-    id: Option<widget::Id>,
-    placeholder: text::Fragment<'a>,
-    selection: String,
-    width: Length,
-    line_height: Option<LineHeight>,
+    text_input: TextInput<'a, TextInputEvent, Theme, Renderer>,
     font: Option<Font>,
+    selection: text_input::Value,
     on_selected: Box<dyn Fn(T) -> Message + 'a>,
     on_option_hovered: Option<Box<dyn Fn(T) -> Message + 'a>>,
     on_open: Option<Message>,
     on_close: Option<Message>,
     on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
     padding: Padding,
-    size: Option<Pixels>,
+    size: Option<f32>,
     shaping: text::Shaping,
     ellipsis: text::Ellipsis,
-    input_class: <Theme as text_input::Catalog>::Class<'a>,
     menu_class: <Theme as menu::Catalog>::Class<'a>,
     menu_height: Length,
-    last_status: Option<text_input::Status>,
 }
 
-impl<'a, T, Message, Theme> ComboBox<'a, T, Message, Theme>
+impl<'a, T, Message, Theme, Renderer> ComboBox<'a, T, Message, Theme, Renderer>
 where
     T: std::fmt::Display + Clone,
     Theme: Catalog,
+    Renderer: text::Renderer,
 {
     /// Creates a new [`ComboBox`] with the given list of options, a placeholder,
     /// the current selected value, and the message to produce when an option is
     /// selected.
     pub fn new(
         state: &'a State<T>,
-        placeholder: impl text::IntoFragment<'a>,
+        placeholder: &str,
         selection: Option<&T>,
         on_selected: impl Fn(T) -> Message + 'a,
     ) -> Self {
+        let text_input = TextInput::new(placeholder, &state.value())
+            .on_input(TextInputEvent::TextChanged)
+            .class(Theme::default_input());
+
+        let selection = selection.map(T::to_string).unwrap_or_default();
+
         Self {
             state,
-            id: None,
-            placeholder: placeholder.into_fragment(),
-            selection: selection.map(T::to_string).unwrap_or_default(),
-            width: Length::Fill,
-            line_height: None,
+            text_input,
             font: None,
+            selection: text_input::Value::new(&selection),
             on_selected: Box::new(on_selected),
             on_option_hovered: None,
             on_input: None,
@@ -189,21 +187,13 @@ where
             size: None,
             shaping: text::Shaping::default(),
             ellipsis: text::Ellipsis::End,
-            input_class: <Theme as Catalog>::default_input(),
             menu_class: <Theme as Catalog>::default_menu(),
-            menu_height: Length::Fit,
-            last_status: None,
+            menu_height: Length::Shrink,
         }
     }
 
-    /// Sets the [`widget::Id`] of the [`ComboBox`].
-    pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
-        self.id = Some(id.into());
-        self
-    }
-
     /// Sets the message that should be produced when some text is typed into
-    /// the [`ComboBox`].
+    /// the [`TextInput`] of the [`ComboBox`].
     pub fn on_input(mut self, on_input: impl Fn(String) -> Message + 'a) -> Self {
         self.on_input = Some(Box::new(on_input));
         self
@@ -233,33 +223,49 @@ where
     /// Sets the [`Padding`] of the [`ComboBox`].
     pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
         self.padding = padding.into();
+        self.text_input = self.text_input.padding(self.padding);
         self
     }
 
     /// Sets the [`Font`] of the [`ComboBox`].
     ///
-    /// [`Font`]: crate::core::Font
+    /// [`Font`]: text::Renderer
     pub fn font(mut self, font: Font) -> Self {
+        self.text_input = self.text_input.font(font);
         self.font = Some(font);
+        self
+    }
+
+    /// Sets the [`text_input::Icon`] of the [`ComboBox`].
+    pub fn icon(mut self, icon: text_input::Icon<Font>) -> Self {
+        self.text_input = self.text_input.icon(icon);
         self
     }
 
     /// Sets the text sixe of the [`ComboBox`].
     pub fn size(mut self, size: impl Into<Pixels>) -> Self {
-        self.size = Some(size.into());
-        self
-    }
+        let size = size.into();
 
-    /// Sets the width of the [`ComboBox`].
-    pub fn width(mut self, width: impl Into<Length>) -> Self {
-        self.width = width.into();
+        self.text_input = self.text_input.size(size);
+        self.size = Some(size.0);
+
         self
     }
 
     /// Sets the [`LineHeight`] of the [`ComboBox`].
-    pub fn line_height(mut self, line_height: impl Into<LineHeight>) -> Self {
-        self.line_height = Some(line_height.into());
-        self
+    pub fn line_height(self, line_height: impl Into<LineHeight>) -> Self {
+        Self {
+            text_input: self.text_input.line_height(line_height),
+            ..self
+        }
+    }
+
+    /// Sets the width of the [`ComboBox`].
+    pub fn width(self, width: impl Into<Length>) -> Self {
+        Self {
+            text_input: self.text_input.width(width),
+            ..self
+        }
     }
 
     /// Sets the height of the menu of the [`ComboBox`].
@@ -289,7 +295,7 @@ where
     where
         <Theme as text_input::Catalog>::Class<'a>: From<text_input::StyleFn<'a, Theme>>,
     {
-        self.input_class = (Box::new(style) as text_input::StyleFn<'a, Theme>).into();
+        self.text_input = self.text_input.style(style);
         self
     }
 
@@ -310,7 +316,7 @@ where
         mut self,
         class: impl Into<<Theme as text_input::Catalog>::Class<'a>>,
     ) -> Self {
-        self.input_class = class.into();
+        self.text_input = self.text_input.class(class);
         self
     }
 
@@ -327,10 +333,21 @@ where
 #[derive(Debug, Clone)]
 pub struct State<T> {
     options: Vec<T>,
-    version: u64,
+    inner: RefCell<Inner<T>>,
 }
 
-static VERSION: AtomicU64 = AtomicU64::new(0);
+#[derive(Debug, Clone)]
+struct Inner<T> {
+    value: String,
+    option_matchers: Vec<String>,
+    filtered_options: Filtered<T>,
+}
+
+#[derive(Debug, Clone)]
+struct Filtered<T> {
+    options: Vec<T>,
+    updated: Instant,
+}
 
 impl<T> State<T>
 where
@@ -338,9 +355,30 @@ where
 {
     /// Creates a new [`State`] for a [`ComboBox`] with the given list of options.
     pub fn new(options: Vec<T>) -> Self {
+        Self::with_selection(options, None)
+    }
+
+    /// Creates a new [`State`] for a [`ComboBox`] with the given list of options
+    /// and selected value.
+    pub fn with_selection(options: Vec<T>, selection: Option<&T>) -> Self {
+        let value = selection.map(T::to_string).unwrap_or_default();
+
+        // Pre-build "matcher" strings ahead of time so that search is fast
+        let option_matchers = build_matchers(&options);
+
+        let filtered_options = Filtered::new(
+            search(&options, &option_matchers, &value)
+                .cloned()
+                .collect(),
+        );
+
         Self {
             options,
-            version: VERSION.fetch_add(1, atomic::Ordering::Relaxed),
+            inner: RefCell::new(Inner {
+                value,
+                option_matchers,
+                filtered_options,
+            }),
         }
     }
 
@@ -354,13 +392,45 @@ where
 
     /// Pushes a new option to the [`State`].
     pub fn push(&mut self, new_option: T) {
+        let mut inner = self.inner.borrow_mut();
+
+        inner.option_matchers.push(build_matcher(&new_option));
         self.options.push(new_option);
-        self.version = VERSION.fetch_add(1, atomic::Ordering::Relaxed);
+
+        inner.filtered_options = Filtered::new(
+            search(&self.options, &inner.option_matchers, &inner.value)
+                .cloned()
+                .collect(),
+        );
     }
 
     /// Returns ownership of the options of the [`State`].
     pub fn into_options(self) -> Vec<T> {
         self.options
+    }
+
+    fn value(&self) -> String {
+        let inner = self.inner.borrow();
+
+        inner.value.clone()
+    }
+
+    fn with_inner<O>(&self, f: impl FnOnce(&Inner<T>) -> O) -> O {
+        let inner = self.inner.borrow();
+
+        f(&inner)
+    }
+
+    fn with_inner_mut(&self, f: impl FnOnce(&mut Inner<T>)) {
+        let mut inner = self.inner.borrow_mut();
+
+        f(&mut inner);
+    }
+
+    fn sync_filtered_options(&self, options: &mut Filtered<T>) {
+        let inner = self.inner.borrow();
+
+        inner.filtered_options.sync(options);
     }
 }
 
@@ -373,100 +443,93 @@ where
     }
 }
 
-struct Internal<T, R: text::Renderer> {
-    editor: Editor<R>,
+impl<T> Filtered<T>
+where
+    T: Clone,
+{
+    fn new(options: Vec<T>) -> Self {
+        Self {
+            options,
+            updated: Instant::now(),
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            options: vec![],
+            updated: Instant::now(),
+        }
+    }
+
+    fn update(&mut self, options: Vec<T>) {
+        self.options = options;
+        self.updated = Instant::now();
+    }
+
+    fn sync(&self, other: &mut Filtered<T>) {
+        if other.updated != self.updated {
+            *other = self.clone();
+        }
+    }
+}
+
+struct Menu<T> {
     menu: menu::State,
     hovered_option: Option<usize>,
-    option_matchers: Vec<String>,
-    filtered_options: Vec<T>,
-    version: u64,
+    new_selection: Option<T>,
+    filtered_options: Filtered<T>,
 }
 
-impl<T: Display + Clone, R: text::Renderer> Internal<T, R> {
-    fn hovered_option(&self) -> usize {
-        let index = self.hovered_option.unwrap_or_default();
-
-        index.min(self.filtered_options.len().saturating_sub(1))
-    }
-
-    fn filter(&mut self, options: &[T], value: &str) {
-        self.option_matchers = build_matchers(options);
-        self.filtered_options = search(options, &self.option_matchers, value)
-            .cloned()
-            .collect();
-    }
-}
-
-struct Editor<R: text::Renderer> {
-    input: text::Input<R>,
-    selection: Option<String>,
+#[derive(Debug, Clone)]
+enum TextInputEvent {
+    TextChanged(String),
 }
 
 impl<T, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
-    for ComboBox<'_, T, Message, Theme>
+    for ComboBox<'_, T, Message, Theme, Renderer>
 where
     T: Display + Clone + 'static,
     Message: Clone,
     Theme: Catalog,
-    Renderer: text::Renderer + 'static,
+    Renderer: text::Renderer,
 {
     fn size(&self) -> Size<Length> {
-        Size {
-            width: self.width,
-            height: Length::Fit,
-        }
+        Widget::<TextInputEvent, Theme, Renderer>::size(&self.text_input)
     }
 
     fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) {
-        let state = tree.state.downcast_mut::<Internal<T, Renderer>>();
+        let is_focused = {
+            let text_input_state = tree.children[0]
+                .state
+                .downcast_ref::<text_input::State<Renderer::Paragraph>>();
 
-        tree.size = state.editor.input.layout(
+            text_input_state.is_focused()
+        };
+
+        self.text_input.layout(
+            &mut tree.children[0],
             renderer,
             limits,
-            input::Layout {
-                width: self.width,
-                height: Length::Fit,
-                padding: self.padding,
-                placeholder: &self.placeholder,
-                font: self.font,
-                size: self.size,
-                line_height: self.line_height,
-                alignment: text::Alignment::Default,
-                multiline: None,
-                is_secure: false,
-            },
+            (!is_focused).then_some(&self.selection),
         );
+        crate::core::layout::pass_through(tree, 0);
     }
 
     fn tag(&self) -> widget::tree::Tag {
-        widget::tree::Tag::of::<Internal<T, Renderer>>()
+        widget::tree::Tag::of::<Menu<T>>()
     }
 
     fn state(&self) -> widget::tree::State {
-        widget::tree::State::new(Internal::<T, Renderer> {
-            editor: Editor {
-                input: text::Input::new(),
-                selection: None,
-            },
+        widget::tree::State::new(Menu::<T> {
             menu: menu::State::new(),
-            filtered_options: Vec::new(),
-            option_matchers: Vec::new(),
+            filtered_options: Filtered::empty(),
             hovered_option: Some(0),
-            version: 0,
+            new_selection: None,
         })
     }
 
     fn diff(&mut self, tree: &mut widget::Tree) {
-        let state = tree.state.downcast_mut::<Internal<T, Renderer>>();
-
-        if state.version != self.state.version
-            || state.editor.selection.as_deref() != Some(&self.selection)
-        {
-            state.editor.input.overwrite(&self.selection);
-            state.editor.selection = Some(self.selection.clone());
-            state.filter(&self.state.options, &self.selection);
-            state.version = self.state.version;
-        }
+        tree.diff_children(&mut [&mut self.text_input as &mut dyn Widget<_, _, _>]);
     }
 
     fn update(
@@ -475,172 +538,256 @@ where
         event: &Event,
         layout: Layout,
         cursor: mouse::Cursor,
-        _renderer: &Renderer,
+        renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
-        _viewport: &Rectangle,
+        viewport: &Rectangle,
     ) {
-        let internal = tree.state.downcast_mut::<Internal<T, Renderer>>();
+        let menu = tree.state.downcast_mut::<Menu<T>>();
 
-        let was_focused = internal.editor.input.is_focused();
+        let started_focused = {
+            let text_input_state = tree.children[0]
+                .state
+                .downcast_ref::<text_input::State<Renderer::Paragraph>>();
 
-        let edit = internal.editor.input.update::<Message>(
+            text_input_state.is_focused()
+        };
+        // This is intended to check whether or not the message buffer was empty,
+        // since `Shell` does not expose such functionality.
+        let mut published_message_to_shell = false;
+
+        // Create a new list of local messages
+        let mut local_messages = crate::core::shell::Bus::new();
+        let mut local_shell = shell.local(&mut local_messages);
+
+        // Provide it to the widget
+        self.text_input.update(
+            &mut tree.children[0],
             event,
-            layout.bounds(),
+            layout,
             cursor,
-            shell,
-            editor::Binding::from_key_press,
+            renderer,
+            &mut local_shell,
+            viewport,
         );
 
-        if edit.is_some() {
-            let value = internal.editor.input.value();
+        if local_shell.is_event_captured() {
+            shell.capture_event();
+        }
+
+        shell.request_redraw_at(local_shell.redraw_request());
+        shell.request_input_method(local_shell.input_method());
+        shell.clipboard_mut().merge(local_shell.clipboard_mut());
+
+        // Then finally react to them here
+        for (message, _receipt) in local_messages.drain() {
+            let TextInputEvent::TextChanged(new_value) = message;
 
             if let Some(on_input) = &self.on_input {
-                shell.publish(on_input(value.clone()));
+                shell.publish((on_input)(new_value.clone()));
             }
 
-            internal.filter(&self.state.options, &value);
+            // Couple the filtered options with the `ComboBox`
+            // value and only recompute them when the value changes,
+            // instead of doing it in every `view` call
+            self.state.with_inner_mut(|state| {
+                menu.hovered_option = Some(0);
+                state.value = new_value;
+
+                state.filtered_options.update(
+                    search(&self.state.options, &state.option_matchers, &state.value)
+                        .cloned()
+                        .collect(),
+                );
+            });
+            shell.invalidate_layout();
+            shell.request_redraw();
         }
 
-        let is_focused = internal.editor.input.is_focused();
-
-        if is_focused {
-            if !was_focused {
-                internal.editor.input.overwrite("");
-                internal.filtered_options = self.state.options.clone();
-
-                if let Some(on_option_hovered) = &mut self.on_option_hovered {
-                    let hovered_option = internal.hovered_option.unwrap_or(0);
-
-                    if let Some(option) = internal.filtered_options.get(hovered_option) {
-                        shell.publish(on_option_hovered(option.clone()));
-                    }
-                }
-            }
-
-            if let Event::Keyboard(keyboard::Event::KeyPressed {
-                key: keyboard::Key::Named(named_key),
-                modifiers,
-                ..
-            }) = event
-            {
-                match (named_key, modifiers.shift()) {
-                    (key::Named::Enter, _) => {
-                        if let Some(option) = internal
-                            .filtered_options
-                            .get(internal.hovered_option())
-                            .cloned()
-                        {
-                            internal.menu = menu::State::default();
-                            internal.editor.selection = None;
-                            internal.editor.input.overwrite("");
-                            internal.editor.input.unfocus();
-
-                            shell.publish((self.on_selected)(option));
-                        }
-
-                        shell.capture_event();
-                        shell.request_redraw();
-                    }
-                    (key::Named::ArrowUp, _) | (key::Named::Tab, true) => {
-                        let index = internal.hovered_option();
-
-                        internal.hovered_option = Some(if index == 0 {
-                            internal.filtered_options.len().saturating_sub(1)
-                        } else {
-                            index.saturating_sub(1)
-                        });
-
-                        if let Some(on_option_hovered) = &mut self.on_option_hovered
-                            && let Some(option) = internal
-                                .hovered_option
-                                .and_then(|index| internal.filtered_options.get(index))
-                        {
-                            shell.publish((on_option_hovered)(option.clone()));
-                        }
-
-                        shell.capture_event();
-                        shell.request_redraw();
-                    }
-                    (key::Named::ArrowDown, _) | (key::Named::Tab, false) => {
-                        let index = internal.hovered_option();
-
-                        internal.hovered_option = Some(
-                            if index >= internal.filtered_options.len().saturating_sub(1) {
-                                0
-                            } else {
-                                index
-                                    .saturating_add(1)
-                                    .min(internal.filtered_options.len().saturating_sub(1))
-                            },
-                        );
-
-                        if let Some(on_option_hovered) = &mut self.on_option_hovered
-                            && let Some(option) = internal
-                                .hovered_option
-                                .and_then(|index| internal.filtered_options.get(index))
-                        {
-                            shell.publish((on_option_hovered)(option.clone()));
-                        }
-
-                        shell.capture_event();
-                        shell.request_redraw();
-                    }
-                    _ => {}
-                }
-            }
+        // enzUI-ICED #1087: the OPEN list owns Escape, explicitly.
+        //
+        // This used to work by accident: `text_input` captured every Escape it
+        // received while focused, so the combo box got list-closing and
+        // event-swallowing for free. That blanket capture is gone (it made any
+        // dialog containing a text field undismissable), so the widget that
+        // actually has something to cancel has to say so.
+        //
+        // The condition is exactly the one `overlay` uses to decide whether a
+        // menu exists at all: focused on entry, with at least one filtered
+        // option. A combo box whose list is shut leaves Escape alone, so a
+        // dialog around it still closes on the first press.
+        if started_focused
+            && matches!(
+                event,
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(key::Named::Escape),
+                    ..
+                })
+            )
+            && self
+                .state
+                .with_inner(|state| !state.filtered_options.options.is_empty())
+        {
+            shell.capture_event();
         }
 
-        if was_focused != is_focused {
-            if is_focused {
-                if let Some(on_open) = self.on_open.take() {
-                    shell.publish(on_open);
-                }
-            } else if let Some(on_close) = self.on_close.take() {
-                internal.editor.input.overwrite(&self.selection);
-                shell.publish(on_close);
-            }
-        }
+        let is_focused = {
+            let text_input_state = tree.children[0]
+                .state
+                .downcast_ref::<text_input::State<Renderer::Paragraph>>();
 
-        let status = if internal.editor.input.is_focused() {
-            text_input::Status::Focused {
-                is_hovered: cursor.is_over(layout.bounds()),
-            }
-        } else if cursor.is_over(layout.bounds()) {
-            text_input::Status::Hovered
-        } else {
-            text_input::Status::Active
+            text_input_state.is_focused()
         };
 
-        if let Event::Window(window::Event::RedrawRequested(_now)) = event {
-            self.last_status = Some(status);
+        if is_focused {
+            self.state.with_inner(|state| {
+                if !started_focused && let Some(on_option_hovered) = &mut self.on_option_hovered {
+                    let hovered_option = menu.hovered_option.unwrap_or(0);
 
-            shell.request_input_method(
-                &internal
-                    .editor
-                    .input
-                    .input_method(layout.bounds().shrink(self.padding).position()),
-            );
-        } else if self
-            .last_status
-            .is_some_and(|last_status| status != last_status)
-        {
-            shell.request_redraw();
+                    if let Some(option) = state.filtered_options.options.get(hovered_option) {
+                        shell.publish(on_option_hovered(option.clone()));
+                        published_message_to_shell = true;
+                    }
+                }
+
+                if let Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(named_key),
+                    modifiers,
+                    ..
+                }) = event
+                {
+                    let shift_modifier = modifiers.shift();
+                    match (named_key, shift_modifier) {
+                        (key::Named::Enter, _) => {
+                            if let Some(index) = &menu.hovered_option
+                                && let Some(option) = state.filtered_options.options.get(*index)
+                            {
+                                menu.new_selection = Some(option.clone());
+                            }
+
+                            shell.capture_event();
+                            shell.request_redraw();
+                        }
+                        (key::Named::ArrowUp, _) | (key::Named::Tab, true) => {
+                            if let Some(index) = &mut menu.hovered_option {
+                                if *index == 0 {
+                                    *index = state.filtered_options.options.len().saturating_sub(1);
+                                } else {
+                                    *index = index.saturating_sub(1);
+                                }
+                            } else {
+                                menu.hovered_option = Some(0);
+                            }
+
+                            if let Some(on_option_hovered) = &mut self.on_option_hovered
+                                && let Some(option) = menu
+                                    .hovered_option
+                                    .and_then(|index| state.filtered_options.options.get(index))
+                            {
+                                // Notify the selection
+                                shell.publish((on_option_hovered)(option.clone()));
+                                published_message_to_shell = true;
+                            }
+
+                            shell.capture_event();
+                            shell.request_redraw();
+                        }
+                        (key::Named::ArrowDown, _) | (key::Named::Tab, false)
+                            if !modifiers.shift() =>
+                        {
+                            if let Some(index) = &mut menu.hovered_option {
+                                if *index >= state.filtered_options.options.len().saturating_sub(1)
+                                {
+                                    *index = 0;
+                                } else {
+                                    *index = index.saturating_add(1).min(
+                                        state.filtered_options.options.len().saturating_sub(1),
+                                    );
+                                }
+                            } else {
+                                menu.hovered_option = Some(0);
+                            }
+
+                            if let Some(on_option_hovered) = &mut self.on_option_hovered
+                                && let Some(option) = menu
+                                    .hovered_option
+                                    .and_then(|index| state.filtered_options.options.get(index))
+                            {
+                                // Notify the selection
+                                shell.publish((on_option_hovered)(option.clone()));
+                                published_message_to_shell = true;
+                            }
+
+                            shell.capture_event();
+                            shell.request_redraw();
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+
+        // If the overlay menu has selected something
+        self.state.with_inner_mut(|state| {
+            if let Some(selection) = menu.new_selection.take() {
+                // Clear the value and reset the options and menu
+                state.value = String::new();
+                state.filtered_options.update(self.state.options.clone());
+                menu.menu = menu::State::default();
+
+                // Notify the selection
+                shell.publish((self.on_selected)(selection));
+                published_message_to_shell = true;
+
+                // Unfocus the input
+                let mut local_messages = crate::core::shell::Bus::new();
+                let mut local_shell = shell.local(&mut local_messages);
+                self.text_input.update(
+                    &mut tree.children[0],
+                    &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                    layout,
+                    mouse::Cursor::Unavailable,
+                    renderer,
+                    &mut local_shell,
+                    viewport,
+                );
+                shell.request_input_method(local_shell.input_method());
+            }
+        });
+
+        let is_focused = {
+            let text_input_state = tree.children[0]
+                .state
+                .downcast_ref::<text_input::State<Renderer::Paragraph>>();
+
+            text_input_state.is_focused()
+        };
+
+        if started_focused != is_focused {
+            // Focus changed, invalidate widget tree to force a fresh `view`
+            shell.invalidate_widgets();
+
+            if !published_message_to_shell {
+                if is_focused {
+                    if let Some(on_open) = self.on_open.take() {
+                        shell.publish(on_open);
+                    }
+                } else if let Some(on_close) = self.on_close.take() {
+                    shell.publish(on_close);
+                }
+            }
         }
     }
 
     fn mouse_interaction(
         &self,
-        _tree: &widget::Tree,
+        tree: &widget::Tree,
         layout: Layout,
         cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-        _renderer: &Renderer,
+        viewport: &Rectangle,
+        renderer: &Renderer,
     ) -> mouse::Interaction {
-        if cursor.is_over(layout.bounds()) {
-            mouse::Interaction::Text
-        } else {
-            mouse::Interaction::default()
-        }
+        self.text_input
+            .mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
     }
 
     fn draw(
@@ -650,36 +797,31 @@ where
         theme: &Theme,
         _style: &renderer::Style,
         layout: Layout,
-        _cursor: mouse::Cursor,
+        cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let internal = tree.state.downcast_ref::<Internal<T, Renderer>>();
+        let is_focused = {
+            let text_input_state = tree.children[0]
+                .state
+                .downcast_ref::<text_input::State<Renderer::Paragraph>>();
 
-        let bounds = layout.bounds();
-        let style = text_input::Catalog::style(
-            theme,
-            &self.input_class,
-            self.last_status.unwrap_or(text_input::Status::Disabled),
-        );
+            text_input_state.is_focused()
+        };
 
-        renderer.fill_quad(
-            renderer::Quad {
-                bounds,
-                border: style.border,
-                ..renderer::Quad::default()
-            },
-            style.background,
-        );
+        let selection = if is_focused || self.selection.is_empty() {
+            None
+        } else {
+            Some(&self.selection)
+        };
 
-        internal.editor.input.draw(
+        self.text_input.draw(
+            &tree.children[0],
             renderer,
-            bounds,
-            *viewport,
-            input::Style {
-                value: style.value,
-                selection: style.selection,
-                placeholder: style.placeholder,
-            },
+            theme,
+            layout,
+            cursor,
+            selection,
+            viewport,
         );
     }
 
@@ -692,25 +834,44 @@ where
         translation: Vector,
         window: Size,
     ) -> Vec<overlay::Element<'b, Message, Theme, Renderer>> {
-        let internal = tree.state.downcast_mut::<Internal<T, Renderer>>();
-        let is_focused = internal.editor.input.is_focused();
+        let is_focused = {
+            let text_input_state = tree.children[0]
+                .state
+                .downcast_ref::<text_input::State<Renderer::Paragraph>>();
+
+            text_input_state.is_focused()
+        };
 
         if is_focused {
-            if internal.filtered_options.is_empty() {
+            let Menu {
+                menu,
+                filtered_options,
+                hovered_option,
+                ..
+            } = tree.state.downcast_mut::<Menu<T>>();
+
+            self.state.sync_filtered_options(filtered_options);
+
+            if filtered_options.options.is_empty() {
                 Vec::new()
             } else {
                 let bounds = layout.bounds();
-                let position = layout.position() + translation;
 
-                let mut menu = Menu::new(
-                    &mut internal.menu,
-                    &internal.filtered_options,
-                    &mut internal.hovered_option,
+                let mut menu = menu::Menu::new(
+                    menu,
+                    &filtered_options.options,
+                    hovered_option,
                     &T::to_string,
                     |selection| {
-                        internal.editor.selection = None;
-                        internal.editor.input.overwrite("");
-                        internal.editor.input.unfocus();
+                        self.state.with_inner_mut(|state| {
+                            state.value = String::new();
+                            state.filtered_options.update(self.state.options.clone());
+                        });
+
+                        tree.children[0]
+                            .state
+                            .downcast_mut::<text_input::State<Renderer::Paragraph>>()
+                            .unfocus();
 
                         (self.on_selected)(selection)
                     },
@@ -731,38 +892,28 @@ where
                     menu = menu.text_size(size);
                 }
 
-                vec![menu.overlay(renderer, position, window, bounds.height)]
+                vec![menu.overlay(
+                    renderer,
+                    layout.position() + translation,
+                    window,
+                    bounds.height,
+                )]
             }
         } else {
             Vec::new()
         }
     }
-
-    fn operate(
-        &mut self,
-        tree: &mut widget::Tree,
-        layout: Layout,
-        _viewport: &Rectangle,
-        _renderer: &Renderer,
-        operation: &mut dyn widget::Operation,
-    ) {
-        let state = tree.state.downcast_mut::<Internal<T, Renderer>>();
-        let bounds = layout.bounds();
-
-        operation.focusable(self.id.as_ref(), bounds, &mut state.editor.input);
-        operation.text_input(self.id.as_ref(), bounds, &mut state.editor.input);
-    }
 }
 
-impl<'a, T, Message, Theme, Renderer> From<ComboBox<'a, T, Message, Theme>>
+impl<'a, T, Message, Theme, Renderer> From<ComboBox<'a, T, Message, Theme, Renderer>>
     for Element<'a, Message, Theme, Renderer>
 where
     T: Display + Clone + 'static,
     Message: Clone + 'a,
     Theme: Catalog + 'a,
-    Renderer: text::Renderer + 'static,
+    Renderer: text::Renderer + 'a,
 {
-    fn from(combo_box: ComboBox<'a, T, Message, Theme>) -> Self {
+    fn from(combo_box: ComboBox<'a, T, Message, Theme, Renderer>) -> Self {
         Self::new(combo_box)
     }
 }

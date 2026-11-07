@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Svg widgets display vector graphics in your application.
 //!
 //! # Example
@@ -22,8 +23,8 @@ use crate::core::svg;
 use crate::core::widget::Tree;
 use crate::core::window;
 use crate::core::{
-    Color, ContentFit, Element, Event, Layout, Length, Point, Rectangle, Rotation, Shell, Size,
-    Theme, Vector, Widget,
+    Color, ContentFit, Element, Event, Layout, Length, Rectangle, Rotation, Shell, Size, Theme,
+    Widget,
 };
 
 use std::path::PathBuf;
@@ -163,32 +164,17 @@ where
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
-        // The raw w/h of the underlying image
-        let Size { width, height } = renderer.measure_svg(&self.handle);
-        let image_size = Size::new(width as f32, height as f32);
-
-        // The rotated size of the svg
-        let rotated_size = self.rotation.apply(image_size);
-
-        // The size to be available to the widget prior to `Shrink`ing
-        let raw_size = limits.resolve(self.width, self.height, rotated_size);
-
-        // The uncropped size of the image when fit to the bounds above
-        let full_size = self.content_fit.fit(rotated_size, raw_size);
-
-        // Shrink the widget to fit the resized image, if requested
-        let final_size = Size {
-            width: match self.width {
-                Length::Fit | Length::Shrink => f32::min(raw_size.width, full_size.width),
-                _ => raw_size.width,
-            },
-            height: match self.height {
-                Length::Fit | Length::Shrink => f32::min(raw_size.height, full_size.height),
-                _ => raw_size.height,
-            },
+        let media = layout::media::Media {
+            source: renderer.measure_svg(&self.handle),
+            sizing: Size::new(self.width, self.height),
+            crop: None,
+            fit: self.content_fit,
+            rotation: self.rotation,
+            expand: false,
         };
-
-        tree.size = final_size;
+        layout::Node::new(media.allocation(limits))
+            .with_media_presentation(*limits, media, renderer::presentation::MediaKind::Vector)
+            .apply(tree);
     }
 
     fn update(
@@ -216,7 +202,7 @@ where
 
     fn draw(
         &self,
-        _state: &Tree,
+        tree: &Tree,
         renderer: &mut Renderer,
         theme: &Theme,
         _style: &renderer::Style,
@@ -224,35 +210,28 @@ where
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
-        let Size { width, height } = renderer.measure_svg(&self.handle);
-        let image_size = Size::new(width as f32, height as f32);
-        let rotated_size = self.rotation.apply(image_size);
-
         let bounds = layout.bounds();
-        let adjusted_fit = self.content_fit.fit(rotated_size, bounds.size());
-        let scale = Vector::new(
-            adjusted_fit.width / rotated_size.width,
-            adjusted_fit.height / rotated_size.height,
-        );
-
-        let final_size = image_size * scale;
-
-        let position = match self.content_fit {
-            ContentFit::None => Point::new(
-                bounds.x + (rotated_size.width - adjusted_fit.width) / 2.0,
-                bounds.y + (rotated_size.height - adjusted_fit.height) / 2.0,
-            ),
-            _ => Point::new(
-                bounds.center_x() - final_size.width / 2.0,
-                bounds.center_y() - final_size.height / 2.0,
-            ),
-        };
-
-        let drawing_bounds = Rectangle::new(position, final_size);
+        if (bounds.width == 0.0 || bounds.height == 0.0)
+            && !tree
+                .media_presentation_node()
+                .is_some_and(|node| renderer.retains_layout_leaf(node))
+        {
+            return;
+        }
+        let drawing_bounds = layout::media::Media {
+            source: renderer.measure_svg(&self.handle),
+            sizing: Size::new(self.width, self.height),
+            crop: None,
+            fit: self.content_fit,
+            rotation: self.rotation,
+            expand: false,
+        }
+        .drawing_bounds(bounds, 1.0);
 
         let style = theme.style(&self.class, self.status.unwrap_or(Status::Idle));
 
-        renderer.draw_svg(
+        renderer.draw_layout_svg(
+            tree.media_presentation_node(),
             svg::Svg {
                 handle: self.handle.clone(),
                 color: style.color,

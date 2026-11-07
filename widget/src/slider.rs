@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Sliders let users set a value by moving an indicator.
 //!
 //! # Example
@@ -225,7 +226,7 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::default())
+        tree::State::interactive(State::default())
     }
 
     fn size(&self) -> Size<Length> {
@@ -668,5 +669,11 @@ pub fn default(theme: &Theme, status: Status) -> Style {
             border_color: Color::TRANSPARENT,
             border_width: 0.0,
         },
+    }
+}
+
+impl tree::Interactive for State {
+    fn cancel_interaction(&mut self) {
+        self.is_dragging = false;
     }
 }

@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::container;
 use crate::core::layout;
 use crate::core::mouse;
@@ -224,6 +225,24 @@ where
 
             fn index(&self) -> f32 {
                 self.content.as_overlay().index()
+            }
+
+            // enzICED: a themed menu that leaves the window still reports
+            // where it draws, what it hangs from and whether it grabs.
+            fn node(&self) -> Option<&layout::Node> {
+                self.content.as_overlay().node()
+            }
+
+            fn area(&self) -> Option<Rectangle> {
+                self.content.as_overlay().area()
+            }
+
+            fn anchor(&self) -> Option<Rectangle> {
+                self.content.as_overlay().anchor()
+            }
+
+            fn grabs(&self) -> bool {
+                self.content.as_overlay().grabs()
             }
 
             fn overlay<'c>(

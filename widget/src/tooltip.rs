@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Tooltips display a hint of information over some element when hovered.
 //!
 //! By default, the tooltip is displayed immediately, however, this can be adjusted
@@ -165,12 +166,20 @@ where
         self.content.as_widget().size()
     }
 
+    fn frame_interest(&self, tree: &widget::Tree) -> bool {
+        matches!(tree.state.downcast_ref::<State>(), State::Hovered { .. })
+            || tree
+                .children
+                .first()
+                .is_none_or(widget::Tree::has_frame_interest)
+    }
+
     fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) {
         self.content
             .as_widget_mut()
             .layout(&mut tree.children[0], renderer, limits);
 
-        tree.size = tree.children[0].size;
+        crate::core::layout::pass_through(tree, 0);
     }
 
     fn update(
@@ -255,6 +264,7 @@ where
             shell,
             viewport,
         );
+        tree.children[0].refresh_frame_interest(self.content.as_widget());
     }
 
     fn mouse_interaction(

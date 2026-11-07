@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::Action;
 use crate::canvas::mouse;
 use crate::canvas::{Event, Geometry};
@@ -16,6 +17,14 @@ where
 {
     /// The internal state mutated by the [`Program`].
     type State: Default + 'static;
+
+    /// Returns whether the program needs presented-frame events.
+    ///
+    /// The default is conservative for custom programs. Programs that can determine
+    /// when they are idle should override this method so ancestor widgets can skip them.
+    fn frame_interest(&self, _state: &Self::State) -> bool {
+        true
+    }
 
     /// Updates the [`State`](Self::State) of the [`Program`].
     ///
@@ -78,6 +87,10 @@ where
     T: Program<Message, Theme, Renderer>,
 {
     type State = T::State;
+
+    fn frame_interest(&self, state: &Self::State) -> bool {
+        T::frame_interest(self, state)
+    }
 
     fn update(
         &self,

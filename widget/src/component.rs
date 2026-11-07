@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Build and reuse custom widgets using The Elm Architecture.
 use crate::Action;
 use crate::core::event;
@@ -123,6 +124,7 @@ where
         component,
         view: crate::space().into(),
         limits: layout::Limits::new(Size::ZERO, Size::INFINITE),
+        needs_layout: true,
         is_outdated: Cell::new(true),
         has_overlay: false,
     })
@@ -135,6 +137,9 @@ where
     component: C,
     view: Element<'a, C::Event, Theme, Renderer>,
     limits: layout::Limits,
+    /// Set until the first layout and after a child asked for layout on its
+    /// own: the view is laid out again even at unchanged limits.
+    needs_layout: bool,
     is_outdated: Cell<bool>,
     has_overlay: bool,
 }
@@ -184,14 +189,15 @@ where
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
-        if &self.limits != limits {
+        if self.needs_layout || &self.limits != limits {
             self.limits = *limits;
+            self.needs_layout = false;
             self.view
                 .as_widget_mut()
                 .layout(&mut tree.children[0], renderer, limits);
         }
 
-        tree.size = tree.children[0].size;
+        crate::core::layout::pass_through(tree, 0);
     }
 
     fn update(
@@ -242,10 +248,21 @@ where
                 shell.capture_event();
             }
 
-            shell.invalidate(local_shell.invalidation());
+            let invalidation = local_shell.invalidation();
+            shell.invalidate(invalidation);
             shell.request_redraw_at(local_shell.redraw_request());
             shell.request_input_method(local_shell.input_method());
             shell.clipboard_mut().merge(local_shell.clipboard_mut());
+
+            // A child that changed its own layout without publishing an
+            // event still needs the view laid out again on the next pass,
+            // even at unchanged limits.
+            if matches!(
+                invalidation,
+                shell::Invalidation::Layout(_) | shell::Invalidation::Widgets
+            ) {
+                self.needs_layout = true;
+            }
         }
 
         if internal.events.is_empty() {
@@ -272,8 +289,9 @@ where
         self.view
             .as_widget_mut()
             .layout(&mut tree.children[0], renderer, &self.limits);
+        self.needs_layout = false;
 
-        tree.size = tree.children[0].size;
+        crate::core::layout::pass_through(tree, 0);
 
         let new_sizing = self.view.as_widget().size();
 
@@ -510,6 +528,24 @@ where
 
     fn index(&self) -> f32 {
         self.raw.as_overlay().index()
+    }
+
+    // enzICED: a component's menu that leaves the window still reports
+    // where it draws, what it hangs from and whether it grabs.
+    fn node(&self) -> Option<&core::layout::Node> {
+        self.raw.as_overlay().node()
+    }
+
+    fn area(&self) -> Option<core::Rectangle> {
+        self.raw.as_overlay().area()
+    }
+
+    fn anchor(&self) -> Option<core::Rectangle> {
+        self.raw.as_overlay().anchor()
+    }
+
+    fn grabs(&self) -> bool {
+        self.raw.as_overlay().grabs()
     }
 
     fn operate(&mut self, renderer: &Renderer, operation: &mut dyn widget::Operation) {

@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! A widget that only rebuilds its contents when necessary.
 use crate::core::Element;
 use crate::core::layout::{self, Layout};
@@ -100,7 +101,7 @@ where
             .as_widget_mut()
             .layout(&mut tree.children[0], renderer, limits);
 
-        tree.size = tree.children[0].size;
+        crate::core::layout::pass_through(tree, 0);
     }
 
     fn operate(
