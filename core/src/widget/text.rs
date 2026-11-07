@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Text widgets display information through writing.
 //!
 //! # Example
@@ -206,14 +207,19 @@ where
         }
     }
 
+    fn frame_interest(&self, _tree: &Tree) -> bool {
+        false
+    }
+
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
-        tree.size = layout(
+        layout_node(
             tree.state.downcast_mut::<State<Renderer::Paragraph>>(),
             renderer,
             limits,
             &self.fragment,
             self.format,
-        );
+        )
+        .apply(tree);
     }
 
     fn draw(
@@ -229,6 +235,15 @@ where
         let state = tree.state.downcast_ref::<State<Renderer::Paragraph>>();
         let style = theme.style(&self.class);
 
+        let bounds = layout.bounds();
+        let maximum = state.raw().bounds();
+        if ((bounds.width == 0.0 && maximum.width == 0.0)
+            || (bounds.height == 0.0 && maximum.height == 0.0))
+            && !renderer.retains_layout_leaf(state.presentation_node())
+        {
+            return;
+        }
+        let recorded = renderer.start_layout_recording(state.presentation_node());
         draw(
             renderer,
             defaults,
@@ -237,17 +252,21 @@ where
             style,
             viewport,
         );
+        if recorded {
+            renderer.mark_recording(renderer::NodeId::STATIC);
+        }
     }
 
     fn operate(
         &mut self,
-        _tree: &mut Tree,
+        tree: &mut Tree,
         layout: Layout,
         _viewport: &Rectangle,
         _renderer: &Renderer,
         operation: &mut dyn super::Operation,
     ) {
-        operation.text(None, layout.bounds(), &self.fragment);
+        let state = tree.state.downcast_ref::<State<Renderer::Paragraph>>();
+        operation.selectable_text(None, layout.bounds(), &self.fragment, state.raw());
     }
 }
 
@@ -298,7 +317,22 @@ pub fn layout<Renderer>(
 where
     Renderer: text::Renderer,
 {
-    layout::sized(limits, format.width, format.height, |limits| {
+    layout_node(paragraph, renderer, limits, content, format).size()
+}
+
+/// Computes the [`layout::Node`] of a [`Text`] widget, declaring its owned
+/// text presentation (enzICED).
+pub fn layout_node<Renderer>(
+    paragraph: &mut paragraph::Plain<Renderer::Paragraph>,
+    renderer: &Renderer,
+    limits: &layout::Limits,
+    content: &str,
+    format: Format,
+) -> layout::Node
+where
+    Renderer: text::Renderer,
+{
+    layout::sized_node(limits, format.width, format.height, |limits| {
         let bounds = limits.bounds();
 
         let size = format.size.unwrap_or_else(|| renderer.text_size());
@@ -321,6 +355,11 @@ where
 
         paragraph.min_bounds()
     })
+    .with_text_presentation(
+        paragraph.presentation_node(),
+        Size::new(format.width, format.height),
+        paragraph.raw().bounds(),
+    )
 }
 
 /// Draws text using the same logic as the [`Text`] widget.

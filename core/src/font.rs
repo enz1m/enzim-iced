@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Load and use fonts.
 use std::hash::Hash;
 
@@ -12,6 +13,8 @@ pub struct Font {
     pub stretch: Stretch,
     /// The [`Style`] of the [`Font`].
     pub style: Style,
+    /// The [`Numeric`] figures of the [`Font`] (enzICED).
+    pub numeric: Numeric,
 }
 
 impl Font {
@@ -21,6 +24,7 @@ impl Font {
         weight: Weight::Normal,
         stretch: Stretch::Normal,
         style: Style::Normal,
+        numeric: Numeric::Proportional,
     };
 
     /// A monospaced font with normal [`Weight`].
@@ -58,6 +62,17 @@ impl Font {
     /// Sets the [`Style`] of the [`Font`].
     pub const fn style(self, style: Style) -> Self {
         Self { style, ..self }
+    }
+
+    /// Sets the [`Numeric`] figures of the [`Font`].
+    pub const fn numeric(self, numeric: Numeric) -> Self {
+        Self { numeric, ..self }
+    }
+
+    /// The [`Font`] with [`Numeric::Tabular`] figures, for numbers that
+    /// change in place or line up in columns.
+    pub const fn tabular(self) -> Self {
+        self.numeric(Numeric::Tabular)
     }
 }
 
@@ -195,6 +210,38 @@ pub enum Style {
     Oblique,
 }
 
+/// The figures a [`Font`] draws digits with (enzICED).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Numeric {
+    /// The font's default figures, each as wide as its shape.
+    #[default]
+    Proportional,
+    /// Figures of one width (OpenType `tnum`), so numbers that change in
+    /// place keep their width and columns of numbers line up.
+    Tabular,
+}
+
 /// A font error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Error {}
+pub enum Error {
+    /// The given bytes contained no font face that could be parsed.
+    ///
+    /// The font database is left unchanged, so text shaped before the load
+    /// stays valid and the requested family remains unavailable.
+    InvalidData {
+        /// The length of the rejected data. The data itself is never reported.
+        bytes: usize,
+    },
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::InvalidData { bytes } => {
+                write!(f, "no font face could be parsed from {bytes} bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {}

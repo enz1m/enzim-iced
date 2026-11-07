@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Draw and interact with text.
 
 pub mod editor;
@@ -5,6 +6,7 @@ pub mod highlighter;
 pub mod input;
 pub mod paragraph;
 pub mod parser;
+pub mod selection_drag;
 
 pub use editor::Editor;
 pub use highlighter::Highlighter;
@@ -239,9 +241,12 @@ impl LineHeight {
     }
 }
 
+/// enzICED: stays at `1.3`. Upstream raised the default to `1.375`
+/// (74a5eb3cb); enzUI's typography, layout tests and pixel goldens are
+/// calibrated to `1.3`, so the bump would shift every unstyled line at once.
 impl Default for LineHeight {
     fn default() -> Self {
-        Self::Relative(1.375)
+        Self::Relative(1.3)
     }
 }
 
@@ -285,6 +290,58 @@ impl Hit {
         match self {
             Self::CharOffset(i) => i,
         }
+    }
+}
+
+/// Which side of a bidi direction boundary a logical cursor is associated with.
+///
+/// A cursor placed at the byte offset between two runs of opposite direction
+/// has *two* valid visual positions — one at the trailing edge of the run
+/// before it, one at the leading edge of the run after it. [`Affinity`] picks
+/// between them. It mirrors the affinity model of the underlying shaping engine
+/// so callers do not have to reinvent it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Affinity {
+    /// Associate the cursor with the run *before* the offset.
+    #[default]
+    Before,
+    /// Associate the cursor with the run *after* the offset.
+    After,
+}
+
+/// The resolved geometry of a logical cursor within a [`Paragraph`].
+///
+/// Unlike a bare [`Point`], this carries the information a caller needs to place
+/// a caret correctly across bidi direction boundaries: the source byte offset it
+/// resolves, the [`Affinity`] that disambiguated it, and the bidi embedding
+/// [`level`] of the glyph the cursor sits against.
+///
+/// [`level`]: CursorPosition::level
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CursorPosition {
+    /// The visual position of the cursor, relative to the top-left of the
+    /// [`Paragraph`].
+    ///
+    /// This is the *logical* position: for a logical-end cursor in a run that is
+    /// visually interior (as happens in mixed bidi), this is where the caret
+    /// belongs, which is not necessarily the rightmost glyph edge.
+    pub point: Point,
+    /// The source byte offset within the paragraph content that this cursor
+    /// resolves.
+    pub offset: usize,
+    /// Which side of a direction boundary the cursor was associated with.
+    pub affinity: Affinity,
+    /// The Unicode bidi embedding level of the glyph the cursor sits against.
+    ///
+    /// Even levels are left-to-right; odd levels are right-to-left. This lets a
+    /// caller reason about caret direction without re-running bidi analysis.
+    pub level: u8,
+}
+
+impl CursorPosition {
+    /// Returns `true` if the cursor sits against a right-to-left glyph.
+    pub const fn is_rtl(&self) -> bool {
+        self.level % 2 == 1
     }
 }
 
@@ -361,6 +418,17 @@ pub trait Renderer: crate::Renderer {
     /// ['ICON_FONT']: Self::ICON_FONT
     const ICED_LOGO: char;
 
+    /// Reconciles one native editor with the installed, source-validated displayed sample.
+    /// Unsupported renderers refuse; this does not establish compositor presentation authority.
+    fn reconcile_presented_editor(
+        &self,
+        _node: crate::renderer::NodeId,
+        _editor: &mut Self::Editor,
+        _viewport: Size,
+    ) -> bool {
+        false
+    }
+
     /// Returns the default [`Font`].
     fn font(&self) -> Font {
         self.settings().font
@@ -385,6 +453,21 @@ pub trait Renderer: crate::Renderer {
         color: Color,
         clip_bounds: Rectangle,
     );
+
+    /// Draws a complete editor viewport, refusing unsupported responsive capture.
+    fn draw_editor_view(
+        &mut self,
+        node: Option<crate::renderer::NodeId>,
+        editor: &Self::Editor,
+        paint: &editor::paint::Paint<'_, crate::Font>,
+    ) where
+        Self: Sized,
+    {
+        if let Some(node) = node {
+            self.reject_layout_paint(node);
+        }
+        editor::paint::draw(self, editor, paint);
+    }
 
     /// Draws the given [`Editor`] at the given position and with the given
     /// [`Color`].
@@ -420,10 +503,42 @@ pub struct Span<'a, Link = ()> {
     pub font: Option<Font>,
     /// The [`Color`] of the [`Span`].
     pub color: Option<Color>,
+    /// A theme-resolution key for the [`Color`] of the [`Span`].
+    ///
+    /// A [`Span`] carries its [`color`] as a baked [`Color`], chosen when the
+    /// view is built. That is fine for a literal colour, but a *semantic* one
+    /// — "muted", "accent" — is a lookup into the active theme's palette, and
+    /// baking it pins the span to whichever theme happened to be active at
+    /// build time. Widget-level styling cannot rescue it either: a paragraph
+    /// has a single style [`Color`], and it is only consulted when
+    /// [`color`] is `None`.
+    ///
+    /// `color_key` is an opaque tag naming *which* colour the span wants, left
+    /// for the widget to resolve against the live theme at draw time. It is a
+    /// plain [`u64`], so a [`Span`] stays `Clone`, `Debug` and `'static`-able,
+    /// and gains no theme generic; the resolver itself lives on the widget.
+    ///
+    /// Ignored unless the widget is given a resolver — see
+    /// `iced_widget::text::Rich::resolve_color`. When both are present, the
+    /// resolved colour takes precedence over [`color`], which then acts as the
+    /// fallback for any key the resolver declines.
+    ///
+    /// [`color`]: Self::color
+    pub color_key: Option<u64>,
     /// The link of the [`Span`].
     pub link: Option<Link>,
     /// The [`Highlight`] of the [`Span`].
     pub highlight: Option<Highlight>,
+    /// A theme-resolution key for the background of the [`Highlight`]
+    /// (enzICED).
+    ///
+    /// The same contract as [`color_key`]: the widget's resolver maps it to
+    /// a [`Color`] against the live theme at draw time, and the baked
+    /// [`Highlight`] background is the fallback. Ignored while the [`Span`]
+    /// has no [`Highlight`].
+    ///
+    /// [`color_key`]: Self::color_key
+    pub highlight_key: Option<u64>,
     /// The [`Padding`] of the [`Span`].
     ///
     /// Currently, it only affects the bounds of the [`Highlight`].
@@ -485,6 +600,34 @@ impl<'a, Link> Span<'a, Link> {
     /// Sets the [`Color`] of the [`Span`], if any.
     pub fn color_maybe(mut self, color: Option<impl Into<Color>>) -> Self {
         self.color = color.map(Into::into);
+        self
+    }
+
+    /// Sets the theme-resolution key for the [`Color`] of the [`Span`].
+    ///
+    /// See [`color_key`] for what this is for. Any [`color`] already set is
+    /// kept and used as the fallback if the resolver declines the key.
+    ///
+    /// [`color_key`]: Self::color_key
+    /// [`color`]: Self::color
+    pub fn color_key(mut self, key: u64) -> Self {
+        self.color_key = Some(key);
+        self
+    }
+
+    /// Sets the theme-resolution key for the [`Color`] of the [`Span`], if any.
+    ///
+    /// [`color_key`]: Self::color_key
+    pub fn color_key_maybe(mut self, key: Option<u64>) -> Self {
+        self.color_key = key;
+        self
+    }
+
+    /// Sets the theme-resolution key of the [`Highlight`] background.
+    ///
+    /// See [`highlight_key`](Self::highlight_key).
+    pub fn highlight_key(mut self, key: u64) -> Self {
+        self.highlight_key = Some(key);
         self
     }
 
@@ -584,8 +727,10 @@ impl<'a, Link> Span<'a, Link> {
             line_height: self.line_height,
             font: self.font,
             color: self.color,
+            color_key: self.color_key,
             link: self.link,
             highlight: self.highlight,
+            highlight_key: self.highlight_key,
             padding: self.padding,
             underline: self.underline,
             strikethrough: self.strikethrough,
@@ -601,8 +746,10 @@ impl<Link> Default for Span<'_, Link> {
             line_height: None,
             font: None,
             color: None,
+            color_key: None,
             link: None,
             highlight: None,
+            highlight_key: None,
             padding: Padding::default(),
             underline: false,
             strikethrough: false,
@@ -623,11 +770,12 @@ impl<Link> PartialEq for Span<'_, Link> {
             && self.line_height == other.line_height
             && self.font == other.font
             && self.color == other.color
+            && self.color_key == other.color_key
     }
 }
 
 /// A specific position in some [`Text`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Position {
     /// The line of the [`Text`].
     pub line: usize,

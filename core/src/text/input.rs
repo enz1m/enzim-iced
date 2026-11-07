@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 #![allow(missing_docs)] // TODO
 use crate::alignment;
 use crate::clipboard;
@@ -166,7 +167,7 @@ impl<R: text::Renderer> Input<R> {
 
                     let is_edit = action.is_edit();
 
-                    editor.perform(action);
+                    let _ = editor.perform(action);
                     shell.capture_event();
 
                     if is_edit && is_multiline {
@@ -247,7 +248,7 @@ impl<R: text::Renderer> Input<R> {
                             action => action.clone(),
                         };
 
-                        editor.perform(action);
+                        let _ = editor.perform(action);
                     }
                     editor::Update::Sequence(updates) => {
                         for update in updates {
@@ -393,6 +394,10 @@ impl<R: text::Renderer> TextInput for Input<R> {
 
     fn select_range(&mut self, start: Position, end: Position) {
         self.editor.select_range(start, end);
+    }
+
+    fn accessible_text(&self) -> Option<crate::widget::operation::text_input::AccessibleText> {
+        TextInput::accessible_text(&self.editor)
     }
 }
 

@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Operate on widgets that have text input.
 use crate::Rectangle;
 use crate::text;
@@ -25,6 +26,74 @@ pub trait TextInput {
 
     /// Selects the given content range of the text input.
     fn select_range(&mut self, start: text::Position, end: text::Position);
+
+    /// The laid-out value and selection, for assistive technology
+    /// (enzICED). `None` when the input does not describe it.
+    fn accessible_text(&self) -> Option<AccessibleText> {
+        None
+    }
+}
+
+/// The text of an input as assistive technology reads it (enzICED): its
+/// lines, where each character sits, and the selection.
+///
+/// A character here is a grapheme cluster, the smallest unit the caret
+/// moves over.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AccessibleText {
+    /// The lines, top to bottom.
+    pub lines: Vec<AccessibleLine>,
+    /// The selection anchor and the caret; equal for a bare caret. `None`
+    /// when the input has no caret.
+    pub selection: Option<(text::Position, text::Position)>,
+}
+
+/// One line of an [`AccessibleText`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AccessibleLine {
+    /// The line's text, without its line break.
+    pub text: String,
+    /// The UTF-8 length of each character, in order.
+    pub characters: Vec<usize>,
+    /// Each character's horizontal offset from the line's start and its
+    /// width, in logical pixels, when the input knows its layout.
+    pub positions: Option<Vec<(f32, f32)>>,
+    /// The line's box relative to the input's text origin, when known.
+    pub bounds: Option<Rectangle>,
+}
+
+impl AccessibleLine {
+    /// A line of `text` with its characters and no layout.
+    pub fn new(text: impl Into<String>) -> Self {
+        use unicode_segmentation::UnicodeSegmentation;
+        let text = text.into();
+        let characters = text.graphemes(true).map(str::len).collect();
+        Self {
+            text,
+            characters,
+            positions: None,
+            bounds: None,
+        }
+    }
+
+    /// The character index holding byte `index` (the line's length at the
+    /// end).
+    pub fn character_at_byte(&self, index: usize) -> usize {
+        let mut start = 0;
+        for (i, length) in self.characters.iter().enumerate() {
+            if index < start + length {
+                return i;
+            }
+            start += length;
+        }
+        self.characters.len()
+    }
+
+    /// The byte index where character `index` starts (the line's length past
+    /// the end).
+    pub fn byte_of_character(&self, index: usize) -> usize {
+        self.characters.iter().take(index).sum()
+    }
 }
 
 /// Produces an [`Operation`] that moves the cursor of the widget with the given [`Id`] to the

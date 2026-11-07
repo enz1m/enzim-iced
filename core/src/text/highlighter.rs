@@ -1,6 +1,7 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Highlight text.
-use crate::Color;
 use crate::font;
+use crate::{Color, Font};
 
 /// A type that describes how to highlight an `Input`
 /// with some [`Style`].
@@ -19,6 +20,16 @@ pub struct Style {
     pub color: Option<Color>,
     /// The [`font::Style`] of the text.
     pub style: Option<font::Style>,
+    /// Replaces the editor family, weight and style for this run.
+    /// An explicit [`style`](Self::style) overrides this font's style.
+    pub font: Option<Font>,
+    /// Per-run size in logical pixels; absent or invalid sizes inherit the editor size.
+    /// Row height follows the editor's base line-height ratio.
+    pub size: Option<crate::Pixels>,
+    /// Whether the text carries an underline (enzICED).
+    pub underline: bool,
+    /// Whether the text carries a strike-through line (enzICED).
+    pub strikethrough: bool,
 }
 
 impl<T, Input, Theme> Highlighter<Input, Theme> for T
@@ -31,5 +42,20 @@ where
 
     fn highlight(&self, input: Input, theme: &Theme) -> Style {
         (self)(input, theme)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Style;
+
+    // Every other producer reaches these fields through `..Style::default()`.
+    #[test]
+    fn style_decorations_default_off() {
+        let style = Style::default();
+
+        assert!(style.font.is_none());
+        assert!(!style.underline);
+        assert!(!style.strikethrough);
     }
 }
