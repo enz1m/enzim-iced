@@ -1,5 +1,10 @@
 struct Globals {
     transform: mat4x4<f32>,
+    // enzICED #41 stage 3: the layer's rounded clip region in physical pixels.
+    // clip_rect = [x, y, w, h]; clip_radius = [tl, tr, br, bl].
+    // An all-zero clip_radius means "no rounded clip".
+    clip_rect: vec4<f32>,
+    clip_radius: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -98,8 +103,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let position = input.clip_bounds.xy;
     let scale = input.clip_bounds.zw;
 
+    // enzICED #306: `rounded_box_sdf` selects its corner from the SIGN of `p`
+    // and its `corners` vector is indexed for a **negated** offset, which is
+    // what every quad caller passes (`solid_fs_main`, `gradient_fs_main`).
+    // Passing the un-negated offset point-mirrors the per-corner lookup
+    // (tl<->br, tr<->bl) -- invisible under a uniform radius, wrong for a
+    // per-corner one.
     let d = rounded_box_sdf(
-        2.0 * (fragment - position - scale / 2.0),
+        -2.0 * (fragment - position - scale / 2.0),
         scale,
         input.border_radius * 2.0,
     ) / 2.0;
@@ -107,7 +118,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let antialias: f32 = clamp(1.0 - d, 0.0, 1.0);
     let inside = all(input.uv >= input.atlas.xy) && all(input.uv <= input.atlas.zw);
 
-    let sample = textureSample(u_texture, u_sampler, input.uv, input.layer) * vec4<f32>(1.0, 1.0, 1.0, antialias * input.opacity * f32(inside));
+    // enzICED #41 stage 3: the LAYER's rounded clip, on top of the image's own
+    // `border_radius` computed above. These are two independent mechanisms --
+    // `border_radius` rounds the image against its own `clip_bounds`, while
+    // this rounds it against the enclosing rounded layer -- so their coverages
+    // multiply rather than one replacing the other.
+    let layer_clip = rounded_clip_coverage(fragment, globals.clip_rect, globals.clip_radius);
+
+    let sample = textureSample(u_texture, u_sampler, input.uv, input.layer) * vec4<f32>(1.0, 1.0, 1.0, antialias * input.opacity * f32(inside) * layer_clip);
     return premultiply(sample);
 }
 

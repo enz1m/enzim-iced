@@ -1,15 +1,18 @@
+// Modified by enzUI contributors. See FORK.md.
 pub(crate) mod cache;
 pub(crate) use cache::Cache;
+pub use cache::{ImageCachePolicy, ImageCacheStatistics};
 
 mod atlas;
 
 #[cfg(feature = "image")]
-mod raster;
+pub(crate) mod raster;
 
 #[cfg(feature = "svg")]
-mod vector;
+pub(crate) mod vector;
 
 use crate::Buffer;
+use crate::clip::ClipRegion;
 use crate::core::border;
 use crate::core::{Rectangle, Size, Transformation};
 use crate::graphics::Shell;
@@ -61,7 +64,9 @@ impl Pipeline {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // enzICED #41 stage 3: FRAGMENT too — the fragment shader
+                    // now reads the layer's rounded clip region from here.
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -104,6 +109,8 @@ impl Pipeline {
                 include_str!("../shader/vertex.wgsl"),
                 "\n",
                 include_str!("../shader/color.wgsl"),
+                "\n",
+                include_str!("../shader/clip.wgsl"),
                 "\n",
                 include_str!("../shader/image.wgsl"),
             ))),
@@ -210,6 +217,7 @@ impl State {
         images: &Batch,
         transformation: Transformation,
         scale: f32,
+        clip: ClipRegion,
     ) {
         if self.layers.len() <= self.prepare_layer {
             self.layers.push(Layer::new(
@@ -221,6 +229,9 @@ impl State {
         }
 
         let layer = &mut self.layers[self.prepare_layer];
+        // Cleared here rather than in `trim`, so a frame presented again
+        // without preparing still has its images (enzUI-ICED #3442).
+        layer.clear();
 
         let mut atlas: Option<Arc<wgpu::BindGroup>> = None;
 
@@ -234,7 +245,7 @@ impl State {
                 } => {
                     // `bounds` and `clip_bounds` can have negative coordinates,
                     // as content can be scrolled out of view; they are clipped
-                    // by the pass's scissor afterwards.
+                    // by the pass's scissor afterwards (upstream #3466).
                     let bounds = nudge::round(*bounds * scale);
                     let clip_bounds = nudge::round(*clip_bounds * scale);
 
@@ -286,7 +297,7 @@ impl State {
                 } => {
                     // `bounds` and `clip_bounds` can have negative coordinates,
                     // as content can be scrolled out of view; they are clipped
-                    // by the pass's scissor afterwards.
+                    // by the pass's scissor afterwards (upstream #3466).
                     let bounds = nudge::round(*bounds * scale);
                     let clip_bounds = nudge::round(*clip_bounds * scale);
 
@@ -339,6 +350,7 @@ impl State {
             encoder,
             belt,
             transformation,
+            clip,
             &self.nearest_instances,
             &self.linear_instances,
         );
@@ -365,10 +377,6 @@ impl State {
     }
 
     pub fn trim(&mut self) {
-        for layer in &mut self.layers[..self.prepare_layer] {
-            layer.clear();
-        }
-
         self.prepare_layer = 0;
     }
 }
@@ -468,11 +476,14 @@ impl Layer {
         encoder: &mut wgpu::CommandEncoder,
         belt: &mut wgpu::util::StagingBelt,
         transformation: Transformation,
+        clip: ClipRegion,
         nearest: &[Instance],
         linear: &[Instance],
     ) {
         let uniforms = Uniforms {
             transform: transformation.into(),
+            clip_rect: clip.rect,
+            clip_radius: clip.radius,
         };
 
         let bytes = bytemuck::bytes_of(&uniforms);
@@ -583,6 +594,14 @@ impl Instance {
 #[derive(Debug, Clone, Copy, Zeroable, Pod)]
 struct Uniforms {
     transform: [f32; 16],
+    // enzICED #41 stage 3: the layer's rounded clip region, physical pixels.
+    // `clip_rect` is [x, y, w, h]; `clip_radius` is [tl, tr, br, bl]. All-zero
+    // radius means "no rounded clip" and the shader takes an early-out.
+    //
+    // `transform` is a mat4x4<f32>, so the struct aligns to 16 and both vec4s
+    // land on 16-byte boundaries with no padding needed.
+    clip_rect: [f32; 4],
+    clip_radius: [f32; 4],
 }
 
 fn add_instances(
