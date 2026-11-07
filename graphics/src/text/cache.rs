@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Cache text.
 use crate::core::{Font, Size};
 use crate::text;
@@ -54,7 +55,7 @@ impl Cache {
             buffer.set_text(
                 key.content,
                 &text::to_attributes(key.font),
-                text::to_shaping(key.shaping, key.content),
+                text::to_shaping_for(key.shaping, key.content, key.font),
                 None,
             );
             buffer.shape_until_scroll(font_system, false);
