@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::core::alignment;
 use crate::core::border;
 use crate::core::layout;
@@ -9,9 +10,27 @@ use crate::core::widget::text::{
 };
 use crate::core::widget::tree::{self, Tree};
 use crate::core::{
-    self, Border, Color, Element, Event, Font, Layout, Length, Pixels, Point, Rectangle, Shell,
-    Size, Vector, Widget,
+    self, Background, Border, Color, Element, Event, Font, Layout, Length, Pixels, Point,
+    Rectangle, Shell, Size, Vector, Widget,
 };
+
+use std::cell::RefCell;
+
+/// Resolves a [`Span::color_key`] against the live theme.
+///
+/// [`Span::color_key`]: core::text::Span::color_key
+type ColorResolver<'a, Theme> = Box<dyn Fn(&Theme, u64) -> Option<Color> + 'a>;
+
+/// Paint overrides for a linked span, independent of its font and hit geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LinkStyle {
+    /// Override foreground ink; `None` preserves the span's resolved colour.
+    pub color: Option<Color>,
+    /// Add an underline; authored span underlines remain visible.
+    pub underline: bool,
+}
+
+type LinkStyleResolver<'a, Theme> = Box<dyn Fn(&Theme, usize, bool) -> LinkStyle + 'a>;
 
 /// A bunch of [`Rich`] text.
 pub struct Rich<'a, Link, Message, Theme = crate::Theme>
@@ -32,6 +51,8 @@ where
     class: Theme::Class<'a>,
     hovered_link: Option<usize>,
     on_link_click: Option<Box<dyn Fn(Link) -> Message + 'a>>,
+    resolve_color: Option<ColorResolver<'a, Theme>>,
+    link_style: Option<LinkStyleResolver<'a, Theme>>,
 }
 
 impl<'a, Link, Message, Theme> Rich<'a, Link, Message, Theme>
@@ -55,6 +76,8 @@ where
             class: Theme::default(),
             hovered_link: None,
             on_link_click: None,
+            resolve_color: None,
+            link_style: None,
         }
     }
 
@@ -137,6 +160,53 @@ where
         self
     }
 
+    /// Resolve linked-span ink and underline at draw time using its index and hover state.
+    /// The override replaces automatic hover underlining, preserves authored underlines,
+    /// and leaves activation, fonts, selection and paragraph geometry unchanged.
+    #[must_use]
+    pub fn link_style(mut self, resolve: impl Fn(&Theme, usize, bool) -> LinkStyle + 'a) -> Self {
+        self.link_style = Some(Box::new(resolve));
+        self
+    }
+
+    /// Sets the resolver used to turn a [`Span::color_key`] into a [`Color`]
+    /// against the **live theme**, at draw time.
+    ///
+    /// # Why this exists
+    ///
+    /// A [`Span`] carries its colour as a baked [`Color`], chosen when the view
+    /// is built. A *semantic* colour — "muted", "accent" — is really a lookup
+    /// into the active theme's palette, so baking it pins the run to whichever
+    /// theme happened to be active at build time, and a later theme switch
+    /// leaves it painting the old palette's ink on the new palette's
+    /// background. [`style`] cannot rescue it: that colour applies to the whole
+    /// paragraph and is only consulted where [`Span::color`] is `None`.
+    ///
+    /// Give each semantic run a [`Span::color_key`] and install a resolver
+    /// here, and the colour is resolved per draw from the `&Theme` in hand.
+    ///
+    /// The resolver returning `None` for a key means "no opinion": the span
+    /// falls back to its own [`Span::color`], and then to [`style`].
+    ///
+    /// Spans without a [`Span::color_key`] are untouched, so installing a
+    /// resolver never changes the appearance of existing text.
+    ///
+    /// # Cost
+    ///
+    /// Colour does not affect text metrics, so re-resolving cannot move a
+    /// glyph. The paragraph is re-shaped only when the *resolved* colours
+    /// actually change — i.e. on a theme switch — not on every frame.
+    ///
+    /// [`Span`]: core::text::Span
+    /// [`Span::color`]: core::text::Span::color
+    /// [`Span::color_key`]: core::text::Span::color_key
+    /// [`style`]: Self::style
+    #[must_use]
+    pub fn resolve_color(mut self, resolve: impl Fn(&Theme, u64) -> Option<Color> + 'a) -> Self {
+        self.resolve_color = Some(Box::new(resolve));
+        self
+    }
+
     /// Sets the default style of the [`Rich`] text.
     #[must_use]
     pub fn style(mut self, style: impl Fn(&Theme) -> Style + 'a) -> Self
@@ -188,6 +258,24 @@ struct State<Link, P: Paragraph> {
     spans: Vec<Span<'static, Link>>,
     span_pressed: Option<usize>,
     paragraph: P,
+    /// Bumped whenever `paragraph` is re-shaped or resized, so a cached
+    /// [`Themed`] paragraph built from an older layout can be detected as
+    /// stale.
+    version: u64,
+    /// The paragraph re-shaped with theme-resolved span colours baked in.
+    ///
+    /// Written from `draw`, which only has `&Tree`, hence the [`RefCell`] —
+    /// the same shape `qr_code` and `markdown` already use to cache
+    /// theme-dependent work.
+    themed: RefCell<Option<Themed<P>>>,
+}
+
+/// A paragraph re-shaped with theme-resolved span colours, plus the inputs it
+/// was built from so it can be reused until one of them changes.
+struct Themed<P> {
+    colors: Vec<Option<Color>>,
+    version: u64,
+    paragraph: P,
 }
 
 impl<Link, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
@@ -206,6 +294,8 @@ where
             spans: Vec::new(),
             span_pressed: None,
             paragraph: Renderer::Paragraph::default(),
+            version: 0,
+            themed: RefCell::new(None),
         })
     }
 
@@ -255,14 +345,116 @@ where
 
         let style = theme.style(&self.class);
 
-        for (index, span) in self.spans.as_ref().as_ref().iter().enumerate() {
-            let is_hovered_link = self.on_link_click.is_some() && Some(index) == self.hovered_link;
+        let spans = self.spans.as_ref().as_ref();
+        let link_styles: Vec<Option<LinkStyle>> = match &self.link_style {
+            Some(resolve) => spans
+                .iter()
+                .enumerate()
+                .map(|(index, span)| {
+                    span.link
+                        .as_ref()
+                        .map(|_| resolve(theme, index, self.hovered_link == Some(index)))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
 
-            if span.highlight.is_some() || span.underline || span.strikethrough || is_hovered_link {
-                let translation = layout.position() - Point::ORIGIN;
+        // Rebaking resolved ink preserves the metrics established during layout.
+        let resolved: Vec<Option<Color>> =
+            if self.resolve_color.is_some() || self.link_style.is_some() {
+                spans
+                    .iter()
+                    .enumerate()
+                    .map(|(index, span)| {
+                        link_styles
+                            .get(index)
+                            .copied()
+                            .flatten()
+                            .and_then(|style| style.color)
+                            .or_else(|| {
+                                self.resolve_color.as_ref().and_then(|resolve| {
+                                    span.color_key.and_then(|key| resolve(theme, key))
+                                })
+                            })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+        if resolved.iter().any(Option::is_some) {
+            let mut themed = state.themed.borrow_mut();
+
+            let is_current = themed
+                .as_ref()
+                .is_some_and(|themed| themed.version == state.version && themed.colors == resolved);
+
+            if !is_current {
+                let recolored: Vec<_> = spans
+                    .iter()
+                    .zip(&resolved)
+                    .map(|(span, resolved)| {
+                        let mut span = span.clone();
+                        span.color = resolved.or(span.color);
+                        span
+                    })
+                    .collect();
+
+                *themed = Some(Themed {
+                    colors: resolved.clone(),
+                    version: state.version,
+                    paragraph: Renderer::Paragraph::with_spans(core::Text {
+                        content: recolored.as_slice(),
+                        bounds: state.paragraph.bounds(),
+                        size: state.paragraph.size(),
+                        line_height: state.paragraph.line_height(),
+                        font: state.paragraph.font(),
+                        align_x: state.paragraph.align_x(),
+                        align_y: state.paragraph.align_y(),
+                        shaping: state.paragraph.shaping(),
+                        wrapping: state.paragraph.wrapping(),
+                        ellipsis: state.paragraph.ellipsis(),
+                        hint_factor: state.paragraph.hint_factor(),
+                    }),
+                });
+            }
+        } else {
+            // No key resolved: drop any cache so a later theme switch back does
+            // not resurrect a stale paragraph.
+            let _ = state.themed.borrow_mut().take();
+        }
+
+        for (index, span) in spans.iter().enumerate() {
+            let is_hovered_link = self.on_link_click.is_some() && Some(index) == self.hovered_link;
+            let underline = span.underline
+                || link_styles
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .map_or(is_hovered_link, |style| style.underline);
+
+            if span.highlight.is_some() || underline || span.strikethrough {
+                // Span regions are relative to the paragraph's top, which
+                // `text::draw` places by the vertical alignment (enzICED).
+                let bounds = layout.bounds();
+                let height = state.paragraph.min_bounds().height;
+                let shift = match state.paragraph.align_y() {
+                    alignment::Vertical::Top => 0.0,
+                    alignment::Vertical::Center => (bounds.height - height) / 2.0,
+                    alignment::Vertical::Bottom => bounds.height - height,
+                };
+                let translation = layout.position() - Point::ORIGIN + Vector::new(0.0, shift);
                 let regions = state.paragraph.span_bounds(index);
 
                 if let Some(highlight) = span.highlight {
+                    // enzICED: a keyed highlight follows the live theme.
+                    let background = match (&self.resolve_color, span.highlight_key) {
+                        (Some(resolve), Some(key)) => {
+                            resolve(theme, key).map_or(highlight.background, Background::from)
+                        }
+                        _ => highlight.background,
+                    };
+
                     for (i, bounds) in regions.iter().enumerate() {
                         let starts = i == 0;
                         let ends = i + 1 == regions.len();
@@ -293,12 +485,12 @@ where
                                 },
                                 ..Default::default()
                             },
-                            highlight.background,
+                            background,
                         );
                     }
                 }
 
-                if span.underline || span.strikethrough || is_hovered_link {
+                if underline || span.strikethrough {
                     let size = span.size.or(self.size).unwrap_or(renderer.text_size());
 
                     let line_height = span
@@ -307,12 +499,18 @@ where
                         .unwrap_or_else(|| renderer.line_height())
                         .to_absolute(size);
 
-                    let color = span.color.or(style.color).unwrap_or(defaults.text_color);
+                    let color = resolved
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .or(span.color)
+                        .or(style.color)
+                        .unwrap_or(defaults.text_color);
 
                     let baseline =
                         translation + Vector::new(0.0, size.0 + (line_height.0 - size.0) / 2.0);
 
-                    if span.underline || is_hovered_link {
+                    if underline {
                         for bounds in &regions {
                             renderer.fill_quad(
                                 renderer::Quad {
@@ -346,14 +544,33 @@ where
             }
         }
 
+        let themed = state.themed.borrow();
+
         text::draw(
             renderer,
             defaults,
             layout.bounds(),
-            &state.paragraph,
+            themed
+                .as_ref()
+                .map_or(&state.paragraph, |themed| &themed.paragraph),
             style,
             viewport,
         );
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout,
+        _viewport: &Rectangle,
+        _renderer: &Renderer,
+        operation: &mut dyn core::widget::Operation,
+    ) {
+        let state = tree
+            .state
+            .downcast_ref::<State<Link, Renderer::Paragraph>>();
+        let plain_text: String = state.spans.iter().map(|span| span.text.as_ref()).collect();
+        operation.selectable_text(None, layout.bounds(), &plain_text, &state.paragraph);
     }
 
     fn update(
@@ -366,11 +583,11 @@ where
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
-        let Some(on_link_clicked) = &self.on_link_click else {
+        if self.on_link_click.is_none() && self.link_style.is_none() {
             return;
-        };
+        }
 
-        let was_hovered = self.hovered_link.is_some();
+        let was_hovered = self.hovered_link;
 
         if let Some(position) = cursor.position_in(layout.bounds()) {
             let state = tree
@@ -388,9 +605,13 @@ where
             self.hovered_link = None;
         }
 
-        if was_hovered != self.hovered_link.is_some() {
+        if was_hovered != self.hovered_link {
             shell.request_redraw();
         }
+
+        let Some(on_link_clicked) = &self.on_link_click else {
+            return;
+        };
 
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -488,6 +709,7 @@ where
         if state.spans != spans {
             state.paragraph = Renderer::Paragraph::with_spans(text_with_spans());
             state.spans = spans.iter().cloned().map(Span::to_static).collect();
+            state.version = state.version.wrapping_add(1);
         } else {
             match state.paragraph.compare(core::Text {
                 content: (),
@@ -505,9 +727,11 @@ where
                 core::text::Difference::None => {}
                 core::text::Difference::Bounds => {
                     state.paragraph.resize(bounds);
+                    state.version = state.version.wrapping_add(1);
                 }
                 core::text::Difference::Shape => {
                     state.paragraph = Renderer::Paragraph::with_spans(text_with_spans());
+                    state.version = state.version.wrapping_add(1);
                 }
             }
         }
