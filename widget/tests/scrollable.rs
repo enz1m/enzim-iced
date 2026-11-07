@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Integration tests for the `scrollable` widget.
 //!
 //! These tests drive the widget through the `Simulator` and observe its
@@ -47,6 +48,8 @@ fn element(
         .id("scrollable")
         .width(Length::Fill)
         .height(viewport_height)
+        // enzICED: smooth scrolling is off by default; these tests pin it.
+        .smooth_scroll(true)
         .on_scroll(Some)
 }
 
@@ -811,7 +814,8 @@ fn content_update_and_draw_see_the_same_translation() {
         observations: observations.clone(),
     })
     .width(Length::Fill)
-    .height(200);
+    .height(200)
+    .smooth_scroll(true);
 
     let mut simulator = Simulator::new(element);
     simulator.point_at(Point::new(500.0, 100.0));
@@ -1075,6 +1079,7 @@ fn element_xy(
     .id("scrollable")
     .width(Length::Fill)
     .height(200)
+    .smooth_scroll(true)
     .direction(Direction::Both {
         vertical: Scrollbar::default(),
         horizontal: Scrollbar::default(),
@@ -1208,6 +1213,7 @@ fn fill_element(content_height: u32) -> Scrollable<'static, Scroll, Theme, Rende
         .id("scrollable")
         .width(Length::Fill)
         .height(Length::Fill)
+        .smooth_scroll(true)
         .on_scroll(Some)
 }
 
@@ -1345,6 +1351,7 @@ fn notifications_report_the_auto_scroll_source() {
         .width(Length::Fill)
         .height(200)
         .auto_scroll(true)
+        .smooth_scroll(true)
         .on_scroll(Some);
 
     let mut simulator = Simulator::new(element);
@@ -1962,4 +1969,130 @@ fn on_scroll_action_can_scroll() {
     // message is the move to 1000 px requested by the handler
     assert_eq!(offsets, vec![1000.0]);
     assert!(sources.into_iter().all(|source| source == Source::Action));
+}
+
+// enzICED: `smooth_scroll_policy` decides smooth scrolling from the theme at
+// each draw, so a toolkit can route it through its motion policy.
+
+/// A [`Scrollable`] like [`element`] whose smooth scrolling follows the theme:
+/// the light theme animates, the dark one stands for reduced motion.
+fn themed_element(
+    content_height: u32,
+    viewport_height: u32,
+) -> Scrollable<'static, Scroll, Theme, Renderer> {
+    Scrollable::new(space().height(content_height))
+        .id("scrollable")
+        .width(Length::Fill)
+        .height(viewport_height)
+        .smooth_scroll_policy(|theme: &Theme| *theme == Theme::Light)
+        .on_scroll(Some)
+}
+
+/// The offsets published so far.
+fn offsets(simulator: &mut Simulator<'_, Scroll>) -> Vec<f32> {
+    simulator
+        .drain()
+        .map(|scroll| scroll.viewport.absolute_offset().y)
+        .collect()
+}
+
+#[test]
+fn a_themed_policy_scrolls_at_once_before_the_first_draw() {
+    let mut simulator = Simulator::new(themed_element(3000, 200));
+    simulator.point_at(Point::new(500.0, 100.0));
+
+    let _ = simulator.scroll(ScrollDelta::Lines { x: 0.0, y: -2.0 });
+
+    assert_eq!(
+        offsets(&mut simulator).first(),
+        Some(&px(2.0)),
+        "an undrawn scrollable has no motion policy yet and must not animate"
+    );
+}
+
+#[test]
+fn a_themed_policy_follows_the_theme_it_was_drawn_with() {
+    let mut simulator = Simulator::new(themed_element(3000, 200));
+    simulator.point_at(Point::new(500.0, 100.0));
+
+    simulator.draw(&Theme::Dark);
+    let _ = offsets(&mut simulator);
+    let _ = simulator.scroll(ScrollDelta::Lines { x: 0.0, y: -2.0 });
+    assert_eq!(
+        offsets(&mut simulator).first(),
+        Some(&px(2.0)),
+        "a reduced-motion theme must land a wheel step at once"
+    );
+
+    simulator.draw(&Theme::Light);
+    let _ = offsets(&mut simulator);
+    let _ = simulator.scroll(ScrollDelta::Lines { x: 0.0, y: -2.0 });
+    let mut instant = Instant::now();
+    step_frames(&mut simulator, &mut instant, 3);
+    let animated = offsets(&mut simulator);
+    assert!(
+        animated.len() > 1 && animated.iter().all(|&y| y > px(2.0) && y < px(4.0)),
+        "a theme that allows motion must ease the wheel step over several \
+         frames instead of landing it: {animated:?}"
+    );
+}
+
+#[test]
+fn turning_motion_off_mid_flight_lands_on_the_target() {
+    let mut simulator = Simulator::new(themed_element(3000, 200));
+    simulator.point_at(Point::new(500.0, 100.0));
+
+    simulator.draw(&Theme::Light);
+    let _ = simulator.scroll(ScrollDelta::Lines { x: 0.0, y: -2.0 });
+    let mut instant = Instant::now();
+    step_frames(&mut simulator, &mut instant, 1);
+    let started = offsets(&mut simulator);
+    assert!(
+        started.last().is_some_and(|&y| y < px(2.0)),
+        "the fixture must be mid-flight before motion is turned off: {started:?}"
+    );
+
+    simulator.draw(&Theme::Dark);
+    step_frames(&mut simulator, &mut instant, 1);
+    assert_eq!(
+        offsets(&mut simulator).last(),
+        Some(&px(2.0)),
+        "a scroll in flight when motion is turned off must land on its target"
+    );
+}
+
+#[test]
+fn wheel_retarget_keeps_the_predicted_frame_position() {
+    for lead in [Duration::from_millis(8), Duration::from_millis(24)] {
+        let offsets = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&offsets);
+        let mut simulator = Simulator::new(element(3000, 200).on_scroll(move |scroll| {
+            observed
+                .borrow_mut()
+                .push(scroll.viewport.absolute_offset().y);
+            Some(scroll)
+        }));
+        simulator.point_at(Point::new(500.0, 100.0));
+        let _ = simulator.scroll(ScrollDelta::Lines { x: 0.0, y: -1.0 });
+        std::thread::sleep(Duration::from_millis(40));
+        // Native redraws sample the predicted presentation instant, ahead of input time.
+        let sampled = Instant::now() + lead;
+        let _ = simulator.simulate([Event::Window(window::Event::RedrawRequested(sampled))]);
+        let before = *offsets.borrow().last().expect("scroll frame notification");
+        assert!(
+            before > 0.0 && before < px(1.0),
+            "animation must be in flight"
+        );
+        let _ = simulator.scroll(ScrollDelta::Lines { x: 0.0, y: -0.5 });
+        let _ = simulator.simulate([Event::Window(window::Event::RedrawRequested(sampled))]);
+        let after = *offsets.borrow().last().expect("retarget notification");
+        assert!(
+            (after - before).abs() < 0.001,
+            "retarget moved an already sampled frame: lead={lead:?}, {before} -> {after}"
+        );
+        let _ = simulator.simulate([Event::Window(window::Event::RedrawRequested(
+            sampled + Duration::from_secs(1),
+        ))]);
+        assert_eq!(offsets.borrow().last(), Some(&px(1.5)));
+    }
 }
