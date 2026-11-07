@@ -1,7 +1,11 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Build window-based GUI applications.
+use std::any::Any;
+
 use crate::core::time::Instant;
 use crate::core::window::{
-    Direction, Event, Icon, Id, Level, Mode, Screenshot, Settings, UserAttention,
+    CursorGrab, Direction, Event, Icon, Id, Level, Mode, Monitor, Screenshot, Settings,
+    UserAttention,
 };
 use crate::core::{Point, Size, Window};
 use crate::futures::Subscription;
@@ -13,6 +17,14 @@ use crate::task::{self, Task};
 pub enum Action {
     /// Open a new window with some [`Settings`].
     Open(Id, Settings, oneshot::Sender<Id>),
+
+    /// Open a new window with compositor activation context.
+    OpenWithActivation(
+        Id,
+        Settings,
+        crate::core::window::ActivationToken,
+        oneshot::Sender<Id>,
+    ),
 
     /// Close the window and exits the application.
     Close(Id),
@@ -112,6 +124,21 @@ pub enum Action {
     /// - **Web / Wayland:** Unsupported.
     GainFocus(Id),
 
+    /// Requests a compositor-mediated token from the input context of a window.
+    RequestActivationToken(
+        Id,
+        oneshot::Sender<
+            Result<crate::core::window::ActivationToken, crate::core::window::ActivationError>,
+        >,
+    ),
+
+    /// Activates a window with a token received through a trusted handoff.
+    Activate(
+        Id,
+        crate::core::window::ActivationToken,
+        oneshot::Sender<Result<(), crate::core::window::ActivationError>>,
+    ),
+
     /// Change the window [`Level`].
     SetLevel(Id, Level),
 
@@ -140,8 +167,30 @@ pub enum Action {
     ///   said, it's usually in the same ballpark as on Windows.
     SetIcon(Id, Icon),
 
+    /// Cast a drop shadow around a window that draws its own frame, or none
+    /// (enzICED).
+    SetShadow(Id, Option<crate::core::window::Shadow>),
+
     /// Runs the closure with a reference to the [`Window`] with the given [`Id`].
     Run(Id, Box<dyn FnOnce(&dyn Window) + Send>),
+
+    /// Requests the window's own Wayland objects for an XDG portal parent
+    /// export, type-erased so this crate stays free of `wayland-client`.
+    ///
+    /// The payload, when present, is `Box<(wayland_client::Connection,
+    /// wayland_client::protocol::wl_surface::WlSurface, u64)>`, where the `u64`
+    /// is the surface identity the windowing backend minted for that surface.
+    /// It is `None` for a closed window or one that is not Wayland.
+    WaylandParentExport(Id, oneshot::Sender<Option<Box<dyn Any + Send>>>),
+
+    /// The id of the window session, to restore placement next launch (enzICED).
+    GetWaylandSessionId(Id, oneshot::Sender<Option<String>>),
+
+    /// The window's `xdg_toplevel` proxy, type-erased (enzICED).
+    WaylandToplevel(Id, oneshot::Sender<Option<Box<dyn Any + Send>>>),
+
+    /// Queue an opaque native toplevel tag, returning whether the protocol is available.
+    SetToplevelTag(Id, String, oneshot::Sender<bool>),
 
     /// Screenshot the viewport of the window.
     Screenshot(Id, oneshot::Sender<Screenshot>),
@@ -158,6 +207,9 @@ pub enum Action {
     /// from being passed to whatever is underneath.
     DisableMousePassthrough(Id),
 
+    /// Confine or lock the pointer to the window, or let it go (enzICED).
+    SetCursorGrab(Id, CursorGrab, oneshot::Sender<bool>),
+
     /// Set the minimum inner window size.
     SetMinSize(Id, Option<Size>),
 
@@ -172,6 +224,9 @@ pub enum Action {
 
     /// Get the logical dimensions of the monitor containing the window with the given [`Id`].
     GetMonitorSize(Id, oneshot::Sender<Option<Size>>),
+
+    /// List the connected monitors (enzICED).
+    GetMonitors(oneshot::Sender<Vec<Monitor>>),
 
     /// Set whether the system can automatically organize windows into tabs.
     ///
@@ -263,6 +318,21 @@ pub fn open(settings: Settings) -> (Id, Task<Id>) {
     (
         id,
         task::oneshot(|channel| crate::Action::Window(Action::Open(id, settings, channel))),
+    )
+}
+
+/// Opens a new window with single-use compositor activation context.
+pub fn open_with_activation(
+    settings: Settings,
+    token: crate::core::window::ActivationToken,
+) -> (Id, Task<Id>) {
+    let id = Id::unique();
+
+    (
+        id,
+        task::oneshot(|channel| {
+            crate::Action::Window(Action::OpenWithActivation(id, settings, token, channel))
+        }),
     )
 }
 
@@ -403,6 +473,28 @@ pub fn gain_focus<T>(id: Id) -> Task<T> {
     task::effect(crate::Action::Window(Action::GainFocus(id)))
 }
 
+/// Requests a compositor-mediated activation token for a window.
+///
+/// The compositor may issue an ineffective token when the request is not tied
+/// to an eligible user interaction. A successful result is not proof that a
+/// later activation will be granted.
+pub fn request_activation_token(
+    id: Id,
+) -> Task<Result<crate::core::window::ActivationToken, crate::core::window::ActivationError>> {
+    task::oneshot(move |channel| crate::Action::Window(Action::RequestActivationToken(id, channel)))
+}
+
+/// Asks the compositor to activate a window using a single-use token.
+///
+/// Success means the native request was submitted; compositor policy still
+/// decides whether focus changes.
+pub fn activate(
+    id: Id,
+    token: crate::core::window::ActivationToken,
+) -> Task<Result<(), crate::core::window::ActivationError>> {
+    task::oneshot(move |channel| crate::Action::Window(Action::Activate(id, token, channel)))
+}
+
 /// Changes the window [`Level`].
 pub fn set_level<T>(id: Id, level: Level) -> Task<T> {
     task::effect(crate::Action::Window(Action::SetLevel(id, level)))
@@ -426,6 +518,12 @@ pub fn set_icon<T>(id: Id, icon: Icon) -> Task<T> {
     task::effect(crate::Action::Window(Action::SetIcon(id, icon)))
 }
 
+/// Casts `shadow` around the window, which draws its own frame, or none
+/// (enzICED). See [`Shadow`](crate::core::window::Shadow).
+pub fn set_shadow<T>(id: Id, shadow: Option<crate::core::window::Shadow>) -> Task<T> {
+    task::effect(crate::Action::Window(Action::SetShadow(id, shadow)))
+}
+
 /// Runs the given callback with a reference to the [`Window`] with the given [`Id`].
 ///
 /// Note that if the window closes before this call is processed the callback will not be run.
@@ -443,6 +541,44 @@ where
     })
 }
 
+/// Requests the window's own Wayland objects for an XDG portal parent export.
+///
+/// Resolves to `None` off Wayland, or if the window is gone by the time the
+/// request is handled. The boxed payload is `(wayland_client::Connection,
+/// wayland_client::protocol::wl_surface::WlSurface, u64)`; the portal layer
+/// downcasts it with `enzui_iced_wayland::owned_window_from_payload`.
+pub fn wayland_parent_export(id: Id) -> Task<Option<Box<dyn Any + Send>>> {
+    task::oneshot(move |channel| crate::Action::Window(Action::WaylandParentExport(id, channel)))
+}
+
+/// The id of the Wayland window session the window joined with
+/// `PlatformSpecific::session` (enzICED), once the compositor has created or
+/// restored it; store it and pass it back next launch. `None` without a
+/// session or where the compositor offers none.
+pub fn wayland_session_id(id: Id) -> Task<Option<String>> {
+    task::oneshot(move |channel| crate::Action::Window(Action::GetWaylandSessionId(id, channel)))
+}
+
+/// The window's own `xdg_toplevel` proxy (enzICED), boxed so this signature
+/// names no Wayland type; `None` for a window that is not a Wayland
+/// toplevel. A protocol that names the window, such as moving it with a drag
+/// (`xdg_toplevel_drag_v1`), downcasts it to
+/// `wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel`.
+pub fn wayland_toplevel(id: Id) -> Task<Option<Box<dyn Any + Send>>> {
+    task::oneshot(move |channel| crate::Action::Window(Action::WaylandToplevel(id, channel)))
+}
+
+/// Queues an opaque tag on this window's native Wayland toplevel.
+///
+/// Returns `false` for a closed window, an unavailable protocol, other platforms,
+/// or tags outside 1–128 ASCII alphanumerics and `._:-`. A `true` result means
+/// the request was queued; it is not a compositor acknowledgement. Use a random
+/// per-window tag and the same tag for dialogs belonging to that origin.
+pub fn set_toplevel_tag(id: Id, tag: impl Into<String>) -> Task<bool> {
+    let tag = tag.into();
+    task::oneshot(move |channel| crate::Action::Window(Action::SetToplevelTag(id, tag, channel)))
+}
+
 /// Captures a [`Screenshot`] from the window.
 pub fn screenshot(id: Id) -> Task<Screenshot> {
     task::oneshot(move |channel| crate::Action::Window(Action::Screenshot(id, channel)))
@@ -454,6 +590,18 @@ pub fn screenshot(id: Id) -> Task<Screenshot> {
 /// through to whatever window is underneath.
 pub fn enable_mouse_passthrough<Message>(id: Id) -> Task<Message> {
     task::effect(crate::Action::Window(Action::EnableMousePassthrough(id)))
+}
+
+/// Confines the pointer to the window, locks it in place or lets it go
+/// (enzICED).
+///
+/// While grabbed, every movement also arrives as
+/// [`mouse::Event::RelativeMotion`](crate::core::mouse::Event::RelativeMotion).
+/// The result is `false` when the platform refuses the grab (X11 cannot lock,
+/// some compositors offer neither). Wayland ends a grab when the window loses
+/// focus; set it again on focus.
+pub fn set_cursor_grab(id: Id, grab: CursorGrab) -> Task<bool> {
+    task::oneshot(move |channel| crate::Action::Window(Action::SetCursorGrab(id, grab, channel)))
 }
 
 /// Disables mouse passthrough for the given window.
@@ -469,6 +617,12 @@ pub fn monitor_size(id: Id) -> Task<Option<Size>> {
     task::oneshot(move |channel| crate::Action::Window(Action::GetMonitorSize(id, channel)))
 }
 
+/// Lists the connected monitors (enzICED): name, resolution, scale and
+/// refresh rate. Wayland does not reveal where they sit in the desktop.
+pub fn monitors() -> Task<Vec<Monitor>> {
+    task::oneshot(|channel| crate::Action::Window(Action::GetMonitors(channel)))
+}
+
 /// Sets whether the system can automatically organize windows into tabs.
 ///
 /// See <https://developer.apple.com/documentation/appkit/nswindow/1646657-allowsautomaticwindowtabbing>
@@ -476,4 +630,126 @@ pub fn allow_automatic_tabbing<T>(enabled: bool) -> Task<T> {
     task::effect(crate::Action::Window(Action::SetAllowAutomaticTabbing(
         enabled,
     )))
+}
+
+/// The set of windows one program update invalidated.
+///
+/// The runtime rebuilds (`view` + `UserInterface::build`), relayouts and
+/// redraws a window only when that window is dirty. An update
+/// that declares nothing at all dirties **every** window, which is the
+/// behaviour every program had before this type existed; narrowing is opt-in
+/// and per-update.
+///
+/// # Correctness
+/// The declaration is a promise by the caller: *no other window's `view` can
+/// observe a difference from this update*. Declaring a window that did not
+/// change is merely wasteful, but failing to declare one that did change
+/// leaves that window painting stale pixels until something else dirties it.
+/// [`crate::Action::Window`] actions, `Reload`, backend/renderer changes and
+/// widget operations always fall back to [`Invalidation::All`], so theme,
+/// scale and reduced-motion changes cannot be narrowed by accident.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Invalidation {
+    /// Every open window may have changed. The compatibility default.
+    All,
+    /// Only these windows may have changed.
+    ///
+    /// Ids of windows that are unknown or already closing are ignored; the
+    /// surviving windows in the set are still invalidated.
+    Windows(Vec<Id>),
+}
+
+impl Invalidation {
+    /// Declares that only the window with the given [`Id`] changed.
+    pub fn only(id: Id) -> Self {
+        Invalidation::Windows(vec![id])
+    }
+
+    /// Declares that no window changed.
+    ///
+    /// Useful for updates that only touch state no `view` reads.
+    pub fn none() -> Self {
+        Invalidation::Windows(Vec::new())
+    }
+
+    /// Adds another window to this declaration.
+    pub fn and(mut self, id: Id) -> Self {
+        match &mut self {
+            Invalidation::All => {}
+            Invalidation::Windows(ids) => {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+
+        self
+    }
+
+    /// Returns the union of two declarations.
+    ///
+    /// [`Invalidation::All`] absorbs everything.
+    pub fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Invalidation::All, _) | (_, Invalidation::All) => Invalidation::All,
+            (Invalidation::Windows(a), Invalidation::Windows(b)) => {
+                b.into_iter().fold(Invalidation::Windows(a), Self::and)
+            }
+        }
+    }
+
+    /// Returns `true` if this declaration covers every window.
+    pub fn is_all(&self) -> bool {
+        matches!(self, Invalidation::All)
+    }
+
+    /// Returns `true` if the window with the given [`Id`] is dirty.
+    pub fn contains(&self, id: Id) -> bool {
+        match self {
+            Invalidation::All => true,
+            Invalidation::Windows(ids) => ids.contains(&id),
+        }
+    }
+}
+
+impl FromIterator<Id> for Invalidation {
+    fn from_iter<I: IntoIterator<Item = Id>>(ids: I) -> Self {
+        ids.into_iter().fold(Invalidation::none(), Self::and)
+    }
+}
+
+/// Declares the windows the current update invalidated.
+///
+/// Batch this with the rest of the [`Task`] an update returns:
+///
+/// ```no_run
+/// # use iced_runtime::{Task, window};
+/// # let editor = iced_runtime::core::window::Id::unique();
+/// # fn save() -> Task<()> { Task::none() }
+/// let _: Task<()> = Task::batch([save(), window::invalidate(window::Invalidation::only(editor))]);
+/// ```
+///
+/// Declarations from every message in the same runtime turn are merged as a
+/// union. Every update owns its declaration independently, so one message's
+/// local scope cannot narrow another message that declares nothing. The
+/// declaration must be immediately ready before its task first waits or is
+/// deferred by the runtime's fairness budget; otherwise that update keeps the
+/// global compatibility default. Any window action, `Reload` or widget
+/// operation in the same turn also restores global invalidation.
+pub fn invalidate<T>(invalidation: Invalidation) -> Task<T> {
+    task::effect(crate::Action::Invalidate(invalidation))
+}
+
+/// Declares that only the window with the given [`Id`] was invalidated.
+pub fn invalidate_only<T>(id: Id) -> Task<T> {
+    invalidate(Invalidation::only(id))
+}
+
+/// Declares that every window was invalidated.
+///
+/// This is the default, so it is only needed to override a narrower
+/// declaration made by another message in the same runtime turn — for
+/// instance, a subscription or task that changed state every `view` reads.
+pub fn invalidate_all<T>() -> Task<T> {
+    invalidate(Invalidation::All)
 }

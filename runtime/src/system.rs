@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Access the native system.
 use crate::core::theme;
 use crate::futures::futures::channel::oneshot;
@@ -15,6 +16,17 @@ pub enum Action {
 
     /// Notify to the runtime that the system theme has changed.
     NotifyTheme(theme::Mode),
+
+    /// Send the current system reduced-motion preference.
+    ///
+    /// `true` means the user has requested that the system minimize the
+    /// amount of non-essential motion it uses (the OS accessibility
+    /// "reduce motion" / "reduce animations" setting).
+    GetReducedMotion(oneshot::Sender<bool>),
+
+    /// Notify to the runtime that the system reduced-motion preference has
+    /// changed.
+    NotifyReducedMotion(bool),
 }
 
 /// Contains information about the system (e.g. system name, processor, memory, graphics adapter).
@@ -68,5 +80,26 @@ pub fn theme_changes() -> Subscription<theme::Mode> {
         };
 
         Some(mode)
+    })
+}
+
+/// Returns the current system reduced-motion preference.
+///
+/// `true` means the user has requested reduced motion.
+pub fn reduced_motion() -> Task<bool> {
+    task::oneshot(|sender| crate::Action::System(Action::GetReducedMotion(sender)))
+}
+
+/// Subscribes to system reduced-motion preference changes.
+pub fn reduced_motion_changes() -> Subscription<bool> {
+    #[derive(Hash)]
+    struct ReducedMotionChanges;
+
+    subscription::filter_map(ReducedMotionChanges, |event| {
+        let subscription::Event::SystemReducedMotionChanged(reduced_motion) = event else {
+            return None;
+        };
+
+        Some(reduced_motion)
     })
 }

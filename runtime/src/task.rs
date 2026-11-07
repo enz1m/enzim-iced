@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Create runtime tasks.
 use crate::Action;
 use crate::core::widget;
@@ -96,15 +97,41 @@ impl<T> Task<T> {
     where
         T: 'static,
     {
+        // The fan-in is built only once a second live stream arrives: a batch
+        // with one task that does work is that task.
+        let mut single = None;
         let mut select_all = stream::SelectAll::new();
         let mut units = 0;
 
         for task in tasks.into_iter() {
             if let Some(stream) = task.stream {
-                select_all.push(stream);
+                match single.take() {
+                    None if select_all.is_empty() => single = Some(stream),
+                    first => {
+                        select_all.extend(first);
+                        select_all.push(stream);
+                    }
+                }
             }
 
             units += task.units;
+        }
+
+        // enzICED #3167: a batch of tasks that do nothing is a task that does
+        // nothing, exactly as `Task::none`. An empty stream here looked like
+        // running work to every executor until polled, which kept a headless
+        // agent worker from ever idling out.
+        if let Some(stream) = single {
+            return Self {
+                stream: Some(stream),
+                units,
+            };
+        }
+        if select_all.is_empty() {
+            return Self {
+                stream: None,
+                units,
+            };
         }
 
         Self {
@@ -409,6 +436,31 @@ where
     })
 }
 
+/// Creates a new [`Task`] that runs the given [`widget::Operation`] against
+/// **one exact window** and produces its output.
+///
+/// Unlike [`widget()`], the operation never reaches any other window: a widget
+/// [`Id`](widget::Id) that two windows both publish is operated only in
+/// `window`. See [`Action::WidgetIn`].
+pub fn widget_in<T>(
+    window: crate::core::window::Id,
+    operation: impl widget::Operation<T> + 'static,
+) -> Task<T>
+where
+    T: Send + 'static,
+{
+    channel(move |sender| {
+        let operation = widget::operation::map(Box::new(operation), move |value| {
+            let _ = sender.clone().try_send(value);
+        });
+
+        Action::WidgetIn {
+            window,
+            operation: Box::new(operation),
+        }
+    })
+}
+
 /// Creates a new [`Task`] that executes the [`Action`] returned by the closure and
 /// produces the value fed to the [`oneshot::Sender`].
 pub fn oneshot<T>(f: impl FnOnce(oneshot::Sender<T>) -> Action<T>) -> Task<T>
@@ -533,4 +585,29 @@ async fn yield_now() {
     }
 
     YieldNow { yielded: false }.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_batch_of_tasks_that_do_nothing_does_nothing() {
+        let empty = Task::<u32>::batch([Task::none(), Task::batch([Task::none()])]);
+        assert!(
+            into_stream(empty).is_none(),
+            "an empty batch must not carry a stream an executor counts as work"
+        );
+
+        let done = Task::batch([Task::none(), Task::done(7_u32)]);
+        assert_eq!(
+            done.units(),
+            0,
+            "a done task has no units, yet produces a value"
+        );
+        assert!(
+            into_stream(done).is_some(),
+            "a batch holding any task keeps its stream"
+        );
+    }
 }

@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Access the clipboard.
 use crate::core::clipboard::{Content, Error, Kind};
 use crate::futures::futures::channel::oneshot;
@@ -27,6 +28,37 @@ pub enum Action {
         /// The channel to send the write result.
         channel: oneshot::Sender<Result<(), Error>>,
     },
+
+    /// Read the primary selection and produce `T` with the result.
+    ReadPrimary {
+        /// The [`Kind`] of [`Content`] to read.
+        kind: Kind,
+        /// The channel to send the read contents.
+        channel: oneshot::Sender<Result<Content, Error>>,
+    },
+
+    /// Offer the given contents as the primary selection.
+    WritePrimary {
+        /// The [`Content`] to offer.
+        content: Content,
+
+        /// The channel to send the write result.
+        channel: oneshot::Sender<Result<(), Error>>,
+    },
+}
+
+/// Read the given [`Kind`] of [`Content`] from the primary selection: the text
+/// a middle click pastes on Linux.
+pub fn read_primary(kind: Kind) -> Task<Result<Arc<Content>, Error>> {
+    task::oneshot(|channel| crate::Action::Clipboard(Action::ReadPrimary { kind, channel }))
+        .map(|result| result.map(Arc::new))
+}
+
+/// Offer the given [`Content`] as the primary selection.
+pub fn write_primary(content: impl Into<Content>) -> Task<Result<(), Error>> {
+    let content = content.into();
+
+    task::oneshot(|channel| crate::Action::Clipboard(Action::WritePrimary { content, channel }))
 }
 
 /// Read the given [`Kind`] of [`Content`] from the clipboard.
