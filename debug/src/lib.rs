@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 pub use iced_core as core;
 pub use iced_futures as futures;
 
@@ -358,54 +359,164 @@ mod internal {
     pub fn layers_rendered(_amount: impl FnOnce() -> usize) {}
 
     pub fn boot() -> Span {
-        Span
+        Span::start("boot")
     }
 
-    pub fn update(_message: &impl std::fmt::Debug) -> Span {
-        Span
+    /// Named `update:<Variant(Inner>` when tracing, from the message's
+    /// `Debug` form, so a trace shows which messages run updates.
+    pub fn update(message: &impl std::fmt::Debug) -> Span {
+        if !trace::enabled() {
+            return Span(None);
+        }
+        let text = format!("{message:?}");
+        let mut name = String::from("update:");
+        for (index, ident) in text
+            .split(['(', '{', ' '])
+            .filter(|part| !part.is_empty())
+            .take(2)
+            .enumerate()
+        {
+            if index > 0 {
+                name.push('(');
+            }
+            name.extend(
+                ident
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_')
+                    .take(40),
+            );
+        }
+        Span(Some((trace::Stage::Named(name), std::time::Instant::now())))
     }
 
     pub fn view(_window: window::Id) -> Span {
-        Span
+        Span::start("view")
     }
 
     pub fn layout(_window: window::Id) -> Span {
-        Span
+        Span::start("layout")
     }
 
     pub fn interact(_window: window::Id) -> Span {
-        Span
+        Span::start("interact")
     }
 
     pub fn draw(_window: window::Id) -> Span {
-        Span
+        Span::start("draw")
     }
 
     pub fn prepare(_primitive: Primitive) -> Span {
-        Span
+        Span::start("prepare")
     }
 
     pub fn render(_primitive: Primitive) -> Span {
-        Span
+        Span::start("render")
     }
 
     pub fn present(_window: window::Id) -> Span {
-        Span
+        Span::start("present")
     }
 
-    pub fn time(_name: impl Into<String>) -> Span {
-        Span
+    pub fn time(name: impl Into<String>) -> Span {
+        if trace::enabled() {
+            Span(Some((
+                trace::Stage::Named(name.into()),
+                std::time::Instant::now(),
+            )))
+        } else {
+            Span(None)
+        }
     }
 
     pub fn commands() -> Subscription<Command> {
         Subscription::none()
     }
 
+    /// A timed stage; written to `ICED_SPAN_TRACE` when that is set.
     #[derive(Debug)]
-    pub struct Span;
+    pub struct Span(Option<(trace::Stage, std::time::Instant)>);
 
     impl Span {
-        pub fn finish(self) {}
+        fn start(stage: &'static str) -> Self {
+            if trace::enabled() {
+                Self(Some((
+                    trace::Stage::Fixed(stage),
+                    std::time::Instant::now(),
+                )))
+            } else {
+                Self(None)
+            }
+        }
+
+        pub fn finish(self) {
+            if let Some((stage, start)) = self.0 {
+                trace::write(&stage, start);
+            }
+        }
+    }
+
+    /// `ICED_SPAN_TRACE=<file>` appends one line per finished span, flushed:
+    /// `<stage> <start µs> <duration µs>`, the start counted from the first
+    /// span of the process.
+    mod trace {
+        use std::io::Write as _;
+        use std::sync::{Mutex, OnceLock};
+        use std::time::Instant;
+
+        #[derive(Debug)]
+        pub enum Stage {
+            Fixed(&'static str),
+            Named(String),
+        }
+
+        struct Trace {
+            origin: Instant,
+            file: Mutex<std::io::BufWriter<std::fs::File>>,
+        }
+
+        fn trace() -> Option<&'static Trace> {
+            static TRACE: OnceLock<Option<Trace>> = OnceLock::new();
+            TRACE
+                .get_or_init(|| {
+                    let path = std::env::var_os("ICED_SPAN_TRACE")?;
+                    let file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                        .ok()?;
+                    let origin = Instant::now();
+                    let mut file = std::io::BufWriter::new(file);
+                    // The origin on the platform clock (`CLOCK_MONOTONIC` on
+                    // Linux), to line spans up with presentation timestamps.
+                    let _ = writeln!(file, "origin {origin:?}");
+                    Some(Trace {
+                        origin,
+                        file: Mutex::new(file),
+                    })
+                })
+                .as_ref()
+        }
+
+        pub fn enabled() -> bool {
+            trace().is_some()
+        }
+
+        pub fn write(stage: &Stage, start: Instant) {
+            let Some(trace) = trace() else {
+                return;
+            };
+            let duration = start.elapsed().as_micros();
+            let at = start.saturating_duration_since(trace.origin).as_micros();
+            let name = match stage {
+                Stage::Fixed(name) => name,
+                Stage::Named(name) => name.as_str(),
+            };
+            if let Ok(mut file) = trace.file.lock() {
+                let _ = writeln!(file, "{name} {at} {duration}");
+                // Flushed per span, so a reader sees a running process's trace.
+                let _ = file.flush();
+            }
+        }
     }
 }
 
