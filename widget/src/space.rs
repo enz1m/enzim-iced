@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Add some explicit spacing between elements.
 use crate::core;
 use crate::core::layout;
@@ -29,15 +30,24 @@ pub fn vertical() -> Space {
 pub struct Space {
     width: Length,
     height: Length,
+    unrealized: bool,
 }
 
 impl Space {
     /// Creates some empty [`Space`] with no size.
     pub fn new() -> Self {
         Space {
-            width: Length::Fit,
-            height: Length::Fit,
+            width: Length::Shrink,
+            height: Length::Shrink,
+            unrealized: false,
         }
+    }
+
+    /// Marks reserved virtual content, not intentionally blank paint.
+    /// Owned replay must hand back ownership before this allocation enters the viewport.
+    pub fn unrealized(mut self) -> Self {
+        self.unrealized = true;
+        self
     }
 
     /// Sets the width of the [`Space`].
@@ -70,8 +80,17 @@ where
         }
     }
 
+    fn frame_interest(&self, _tree: &Tree) -> bool {
+        false
+    }
+
     fn layout(&mut self, tree: &mut Tree, _renderer: &Renderer, limits: &layout::Limits) {
-        tree.size = layout::atomic(limits, self.width, self.height);
+        if self.unrealized {
+            layout::unrealized(limits, self.width, self.height)
+        } else {
+            layout::empty(limits, self.width, self.height)
+        }
+        .apply(tree);
     }
 
     fn draw(

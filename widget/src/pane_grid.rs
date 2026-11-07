@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Pane grids let your users split regions of your application and organize layout dynamically.
 //!
 //! ![Pane grid - Iced](https://iced.rs/examples/pane_grid.gif)
@@ -92,7 +93,6 @@ use crate::core::{
     Shell, Size, Theme, Vector, Widget,
 };
 
-const DRAG_DEADBAND_DISTANCE: f32 = 10.0;
 const THICKNESS_RATIO: f32 = 25.0;
 
 /// A collection of panes distributed using either vertical or horizontal splits
@@ -569,7 +569,7 @@ where
                     && let Some(on_drag) = on_drag
                     && let Some(cursor_position) = cursor.position()
                 {
-                    if cursor_position.distance(origin) > DRAG_DEADBAND_DISTANCE {
+                    if is_dragging(origin, cursor_position) {
                         let event = if let Some(edge) = in_edge(layout, cursor_position) {
                             DragEvent::Dropped {
                                 pane,
@@ -604,7 +604,21 @@ where
                     }
                 }
 
+                if cursor.position().is_none()
+                    && let Some((pane, _)) = action.picked_pane()
+                    && let Some(on_drag) = on_drag
+                {
+                    shell.publish(on_drag(DragEvent::Canceled { pane }));
+                }
                 *action = state::Action::Idle;
+            }
+            Event::Mouse(mouse::Event::CursorLeft) | Event::Window(window::Event::Unfocused) => {
+                if let Some((pane, _)) = action.picked_pane() {
+                    if let Some(on_drag) = on_drag {
+                        shell.publish(on_drag(DragEvent::Canceled { pane }));
+                    }
+                    *action = state::Action::Idle;
+                }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. })
             | Event::Touch(touch::Event::FingerMoved { .. }) => {
@@ -934,17 +948,6 @@ where
     layout: Layout,
 }
 
-impl<'a, 'b, Message, Theme, Renderer> PickedPane<'a, 'b, Message, Theme, Renderer>
-where
-    Theme: container::Catalog,
-    Renderer: core::Renderer,
-{
-    fn bounds(&self) -> Rectangle {
-        // TODO: Mouse translation
-        Rectangle::new(self.origin, self.layout.bounds().size())
-    }
-}
-
 impl<'a, 'b, Message, Theme, Renderer> core::Overlay<Message, Theme, Renderer>
     for PickedPane<'a, 'b, Message, Theme, Renderer>
 where
@@ -966,7 +969,7 @@ where
             Vector::ZERO
         };
 
-        renderer.with_layer(self.bounds(), |renderer| {
+        renderer.with_layer(self.layout.bounds() + translation, |renderer| {
             renderer.with_translation(translation, |renderer| {
                 self.content.draw(
                     self.tree,
@@ -982,8 +985,9 @@ where
     }
 }
 
+/// Whether the pointer moved past the desktop's drag threshold.
 fn is_dragging(origin: Point, cursor: Point) -> bool {
-    cursor.distance(origin) > DRAG_DEADBAND_DISTANCE
+    cursor.distance(origin) > core::preferences::get().drag_threshold
 }
 
 impl<'a, Message, Theme, Renderer> From<PaneGrid<'a, Message, Theme, Renderer>>

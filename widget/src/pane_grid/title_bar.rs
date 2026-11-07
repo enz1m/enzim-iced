@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::container;
 use crate::core::layout;
 use crate::core::mouse;
@@ -19,6 +20,8 @@ where
     controls: Option<Controls<'a, Message, Theme, Renderer>>,
     padding: Padding,
     always_show_controls: bool,
+    draggable_title: bool,
+    reserve_controls: bool,
     class: Theme::Class<'a>,
 }
 
@@ -34,6 +37,8 @@ where
             controls: None,
             padding: Padding::ZERO,
             always_show_controls: false,
+            draggable_title: false,
+            reserve_controls: false,
             class: Theme::default(),
         }
     }
@@ -60,6 +65,25 @@ where
     /// [`Pane`]: super::Pane
     pub fn always_show_controls(mut self) -> Self {
         self.always_show_controls = true;
+        self
+    }
+
+    /// Include decorative title content in the drag pick area.
+    ///
+    /// Defaults to `false`. Interactive controls remain excluded; interactive
+    /// title content belongs in the controls slot when this is enabled.
+    pub fn draggable_title(mut self, draggable: bool) -> Self {
+        self.draggable_title = draggable;
+        self
+    }
+
+    /// Reserve the full controls' width before laying out the title content.
+    ///
+    /// Fill-width titles receive the remaining lane instead of being hidden;
+    /// title paint is clipped to that lane. The controls take priority over
+    /// compact alternatives in this mode.
+    pub fn reserve_controls(mut self) -> Self {
+        self.reserve_controls = true;
         self
     }
 
@@ -200,22 +224,30 @@ where
         }
 
         if show_title {
-            self.content.as_widget().draw(
-                title_tree,
-                renderer,
-                theme,
-                &inherited_style,
-                title_layout,
-                cursor,
-                viewport,
-            );
+            let draw_title = |renderer: &mut Renderer| {
+                self.content.as_widget().draw(
+                    title_tree,
+                    renderer,
+                    theme,
+                    &inherited_style,
+                    title_layout,
+                    cursor,
+                    viewport,
+                );
+            };
+            if self.reserve_controls {
+                renderer.with_layer(title_layout.bounds(), draw_title);
+            } else {
+                draw_title(renderer);
+            }
         }
     }
 
     /// Returns whether the mouse cursor is over the pick area of the
     /// [`TitleBar`] or not.
     ///
-    /// The whole [`TitleBar`] is a pick area, except its controls.
+    /// Controls are excluded. Title content is excluded by default; use
+    /// [`Self::draggable_title`] for a decorative label.
     pub fn is_over_pick_area(&self, tree: &Tree, layout: Layout, cursor_position: Point) -> bool {
         if layout.bounds().contains(cursor_position) {
             let mut children = layout.iter(&tree.children);
@@ -229,16 +261,18 @@ where
                 if title_layout.bounds().width + controls_layout.bounds().width > padded_width {
                     if controls.compact.is_some() {
                         !compact_layout.bounds().contains(cursor_position)
-                            && !title_layout.bounds().contains(cursor_position)
+                            && (self.draggable_title
+                                || !title_layout.bounds().contains(cursor_position))
                     } else {
                         !controls_layout.bounds().contains(cursor_position)
                     }
                 } else {
                     !controls_layout.bounds().contains(cursor_position)
-                        && !title_layout.bounds().contains(cursor_position)
+                        && (self.draggable_title
+                            || !title_layout.bounds().contains(cursor_position))
                 }
             } else {
-                !title_layout.bounds().contains(cursor_position)
+                self.draggable_title || !title_layout.bounds().contains(cursor_position)
             }
         } else {
             false
@@ -248,21 +282,40 @@ where
     pub(crate) fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
         let limits = limits.shrink(self.padding);
         let max_size = limits.max;
+        let title_max_size = if self.reserve_controls {
+            if let Some(controls) = &mut self.controls {
+                controls.full.as_widget_mut().layout(
+                    &mut tree.children[1],
+                    renderer,
+                    &layout::Limits::new(Size::ZERO, max_size),
+                );
+                Size::new(
+                    (max_size.width - tree.children[1].size.width).max(0.0),
+                    max_size.height,
+                )
+            } else {
+                max_size
+            }
+        } else {
+            max_size
+        };
 
         self.content.as_widget_mut().layout(
             &mut tree.children[0],
             renderer,
-            &layout::Limits::new(Size::ZERO, max_size),
+            &layout::Limits::new(Size::ZERO, title_max_size),
         );
 
         let title_size = tree.children[0].size;
 
         let inner_size = if let Some(controls) = &mut self.controls {
-            controls.full.as_widget_mut().layout(
-                &mut tree.children[1],
-                renderer,
-                &layout::Limits::new(Size::ZERO, max_size),
-            );
+            if !self.reserve_controls {
+                controls.full.as_widget_mut().layout(
+                    &mut tree.children[1],
+                    renderer,
+                    &layout::Limits::new(Size::ZERO, max_size),
+                );
+            }
 
             let controls_size = tree.children[1].size;
 

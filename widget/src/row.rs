@@ -1,10 +1,11 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Distribute content horizontally.
 use crate::core::alignment::{self, Alignment};
 use crate::core::layout::{self, Layout};
 use crate::core::mouse;
 use crate::core::overlay;
 use crate::core::renderer;
-use crate::core::widget::{Operation, Tree, tree};
+use crate::core::widget::{Operation, Tree};
 use crate::core::{
     Element, Event, Length, Padding, Pixels, Rectangle, Shell, Size, Vector, Widget,
 };
@@ -38,6 +39,7 @@ pub struct Row<'a, Message, Theme = crate::Theme, Renderer = crate::Renderer> {
     height: Length,
     align: Alignment,
     clip: bool,
+    mirrored: bool,
     children: Vec<Element<'a, Message, Theme, Renderer>>,
 }
 
@@ -79,6 +81,7 @@ where
             height: Length::Fit,
             align: Alignment::Start,
             clip: false,
+            mirrored: false,
             children,
         }
     }
@@ -121,6 +124,15 @@ where
     /// overflow.
     pub fn clip(mut self, clip: bool) -> Self {
         self.clip = clip;
+        self
+    }
+
+    /// Lays the children out from right to left, for a right-to-left
+    /// locale (enzICED). Focus, accessibility and event order stay logical:
+    /// only positions mirror, so the first child still comes first to a
+    /// keyboard and a screen reader. A [`wrap`](Self::wrap)ped row ignores it.
+    pub fn mirrored(mut self, mirrored: bool) -> Self {
+        self.mirrored = mirrored;
         self
     }
 
@@ -177,14 +189,6 @@ impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
 where
     Renderer: crate::core::Renderer,
 {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<layout::flex::Cache>()
-    }
-
-    fn state(&self) -> tree::State {
-        tree::State::new(layout::flex::Cache::default())
-    }
-
     fn diff(&mut self, tree: &mut Tree) {
         tree.diff_children(&mut self.children);
 
@@ -206,9 +210,13 @@ where
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
-        let cache = tree.state.downcast_mut::<layout::flex::Cache>();
-
-        tree.size = layout::flex::resolve(
+        // A mirrored row resolves its children in visual order and then
+        // restores the logical order the rest of the widget relies on.
+        if self.mirrored {
+            self.children.reverse();
+            tree.children.reverse();
+        }
+        let node = layout::flex::resolve(
             layout::flex::Axis::Horizontal,
             renderer,
             limits,
@@ -217,10 +225,21 @@ where
             self.padding,
             self.spacing,
             self.align,
-            &mut tree.children,
             &mut self.children,
-            cache,
+            &mut tree.children,
         );
+        if self.mirrored {
+            self.children.reverse();
+            tree.children.reverse();
+        }
+        node.with_drawing_cull(self.clip)
+            .with_child_drawing_culls()
+            .with_reversed_children(self.mirrored)
+            .apply(tree);
+    }
+
+    fn frame_interest(&self, tree: &Tree) -> bool {
+        !tree.frame_children.is_empty()
     }
 
     fn operate(
@@ -262,6 +281,50 @@ where
             child
                 .as_widget_mut()
                 .update(tree, event, layout, cursor, renderer, shell, viewport);
+            tree.refresh_frame_interest(child.as_widget());
+        }
+        tree.refresh_frame_children();
+    }
+
+    fn update_frame(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let Tree {
+            children,
+            frame_children,
+            ..
+        } = tree;
+        let mut route = 0;
+
+        while route < frame_children.len() {
+            let index = frame_children[route];
+            let child = &mut self.children[index];
+            let child_layout = layout.child(children, index);
+            let child_tree = &mut children[index];
+
+            child.as_widget_mut().update_frame(
+                child_tree,
+                event,
+                child_layout,
+                cursor,
+                renderer,
+                shell,
+                viewport,
+            );
+            child_tree.refresh_frame_interest(child.as_widget());
+
+            if child_tree.has_frame_interest() {
+                route += 1;
+            } else {
+                let _ = frame_children.remove(route);
+            }
         }
     }
 
@@ -295,24 +358,15 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        if let Some(clipped_viewport) = layout.bounds().intersection(viewport) {
-            let viewport = if self.clip {
-                &clipped_viewport
-            } else {
-                viewport
-            };
-
-            for (child, (layout, tree)) in self
-                .children
-                .iter()
-                .zip(layout.iter(&tree.children))
-                .filter(|(_, (layout, _))| layout.bounds().intersects(viewport))
-            {
-                child
-                    .as_widget()
-                    .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        layout.draw_culled(tree, renderer, viewport, |renderer, viewport| {
+            for (child, (layout, tree)) in self.children.iter().zip(layout.iter(&tree.children)) {
+                layout.draw_culled(tree, renderer, viewport, |renderer, viewport| {
+                    child
+                        .as_widget()
+                        .draw(tree, renderer, theme, style, layout, cursor, viewport);
+                });
             }
-        }
+        });
     }
 
     fn overlay<'b>(
@@ -387,112 +441,31 @@ where
         self.row.size()
     }
 
+    fn frame_interest(&self, tree: &Tree) -> bool {
+        self.row.frame_interest(tree)
+    }
+
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
-        let limits = limits
-            .width(self.row.width)
-            .height(self.row.height)
-            .shrink(self.row.padding);
-
-        let child_limits = limits.loose();
-        let spacing = self.row.spacing;
-        let vertical_spacing = self.vertical_spacing.unwrap_or(spacing);
-        let max_width = limits.bounds().width;
-
-        let mut intrinsic_size = Size::ZERO;
-        let mut row_start = 0;
-        let mut row_height = 0.0;
-        let mut x = 0.0;
-        let mut y = 0.0;
-
-        let align_factor = match self.row.align {
-            Alignment::Start => 0.0,
-            Alignment::Center => 2.0,
-            Alignment::End => 1.0,
-        };
-
-        let align_y =
-            |row_start: std::ops::Range<usize>, row_height: f32, children: &mut [Tree]| {
-                if align_factor != 0.0 {
-                    for child in &mut children[row_start] {
-                        let height = child.size.height;
-
-                        child.translation.y += (row_height - height) / align_factor;
-                    }
-                }
-            };
-
-        for (i, child) in self.row.children.iter_mut().enumerate() {
-            child
-                .as_widget_mut()
-                .layout(&mut tree.children[i], renderer, &child_limits);
-
-            let child_size = tree.children[i].size;
-
-            if x != 0.0 && x + child_size.width > max_width {
-                intrinsic_size.width = intrinsic_size.width.max(x - spacing);
-
-                align_y(row_start..i, row_height, &mut tree.children);
-
-                y += row_height + vertical_spacing;
-                x = 0.0;
-                row_start = i;
-                row_height = 0.0;
-            }
-
-            row_height = row_height.max(child_size.height);
-
-            tree.children[i].translation =
-                Vector::new(x + self.row.padding.left, y + self.row.padding.top);
-
-            x += child_size.width + spacing;
-        }
-
-        if x != 0.0 {
-            intrinsic_size.width = intrinsic_size.width.max(x - spacing);
-        }
-
-        intrinsic_size.height = y + row_height;
-        align_y(
-            row_start..tree.children.len(),
-            row_height,
+        layout::flow::resolve(
+            renderer,
+            limits,
+            layout::flow::Rule {
+                axis: layout::flow::Axis::Horizontal,
+                sizing: Size::new(self.row.width, self.row.height),
+                padding: self.row.padding,
+                gaps: [
+                    self.row.spacing,
+                    self.vertical_spacing.unwrap_or(self.row.spacing),
+                ],
+                cross_alignment: self.row.align,
+                main_alignment: self.align_x.into(),
+            },
+            &mut self.row.children,
             &mut tree.children,
-        );
-
-        let align_factor = match self.align_x {
-            alignment::Horizontal::Left => 0.0,
-            alignment::Horizontal::Center => 2.0,
-            alignment::Horizontal::Right => 1.0,
-        };
-
-        if align_factor != 0.0 {
-            let total_width = intrinsic_size.width;
-
-            let mut row_start = 0;
-
-            for i in 0..tree.children.len() {
-                let row_width = tree.children[i].translation.x + tree.children[i].size.width;
-
-                let next_x = tree
-                    .children
-                    .get(i + 1)
-                    .map(|child| child.translation.x)
-                    .unwrap_or_default();
-
-                if next_x == 0.0 {
-                    let translation = Vector::new((total_width - row_width) / align_factor, 0.0);
-
-                    for child in &mut tree.children[row_start..=i] {
-                        child.translation += translation;
-                    }
-
-                    row_start = i + 1;
-                }
-            }
-        }
-
-        let size = limits.resolve(self.row.width, self.row.height, intrinsic_size);
-
-        tree.size = size.expand(self.row.padding);
+        )
+        .with_drawing_cull(self.row.clip)
+        .with_child_drawing_culls()
+        .apply(tree);
     }
 
     fn operate(
@@ -519,6 +492,20 @@ where
     ) {
         self.row
             .update(tree, event, layout, cursor, renderer, shell, viewport);
+    }
+
+    fn update_frame(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.row
+            .update_frame(tree, event, layout, cursor, renderer, shell, viewport);
     }
 
     fn mouse_interaction(

@@ -1,10 +1,11 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Distribute content vertically.
 use crate::core::alignment::{self, Alignment};
 use crate::core::layout;
 use crate::core::mouse;
 use crate::core::overlay;
 use crate::core::renderer;
-use crate::core::widget::{Operation, Tree, tree};
+use crate::core::widget::{Operation, Tree};
 use crate::core::{
     Element, Event, Layout, Length, Padding, Pixels, Rectangle, Shell, Size, Vector, Widget,
 };
@@ -171,14 +172,6 @@ impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
 where
     Renderer: crate::core::Renderer,
 {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<layout::flex::Cache>()
-    }
-
-    fn state(&self) -> tree::State {
-        tree::State::new(layout::flex::Cache::default())
-    }
-
     fn diff(&mut self, tree: &mut Tree) {
         tree.diff_children(&mut self.children);
 
@@ -200,9 +193,7 @@ where
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
-        let cache = tree.state.downcast_mut::<layout::flex::Cache>();
-
-        tree.size = layout::flex::resolve(
+        layout::flex::resolve(
             layout::flex::Axis::Vertical,
             renderer,
             limits,
@@ -211,10 +202,16 @@ where
             self.padding,
             self.spacing,
             self.align,
-            &mut tree.children,
             &mut self.children,
-            cache,
-        );
+            &mut tree.children,
+        )
+        .with_drawing_cull(self.clip)
+        .with_child_drawing_culls()
+        .apply(tree);
+    }
+
+    fn frame_interest(&self, tree: &Tree) -> bool {
+        !tree.frame_children.is_empty()
     }
 
     fn operate(
@@ -256,6 +253,50 @@ where
             child
                 .as_widget_mut()
                 .update(tree, event, layout, cursor, renderer, shell, viewport);
+            tree.refresh_frame_interest(child.as_widget());
+        }
+        tree.refresh_frame_children();
+    }
+
+    fn update_frame(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let Tree {
+            children,
+            frame_children,
+            ..
+        } = tree;
+        let mut route = 0;
+
+        while route < frame_children.len() {
+            let index = frame_children[route];
+            let child = &mut self.children[index];
+            let child_layout = layout.child(children, index);
+            let child_tree = &mut children[index];
+
+            child.as_widget_mut().update_frame(
+                child_tree,
+                event,
+                child_layout,
+                cursor,
+                renderer,
+                shell,
+                viewport,
+            );
+            child_tree.refresh_frame_interest(child.as_widget());
+
+            if child_tree.has_frame_interest() {
+                route += 1;
+            } else {
+                let _ = frame_children.remove(route);
+            }
         }
     }
 
@@ -289,24 +330,15 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        if let Some(clipped_viewport) = layout.bounds().intersection(viewport) {
-            let viewport = if self.clip {
-                &clipped_viewport
-            } else {
-                viewport
-            };
-
-            for (child, (layout, tree)) in self
-                .children
-                .iter()
-                .zip(layout.iter(&tree.children))
-                .filter(|(_, (layout, _))| layout.bounds().intersects(viewport))
-            {
-                child
-                    .as_widget()
-                    .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        layout.draw_culled(tree, renderer, viewport, |renderer, viewport| {
+            for (child, (layout, tree)) in self.children.iter().zip(layout.iter(&tree.children)) {
+                layout.draw_culled(tree, renderer, viewport, |renderer, viewport| {
+                    child
+                        .as_widget()
+                        .draw(tree, renderer, theme, style, layout, cursor, viewport);
+                });
             }
-        }
+        });
     }
 
     fn overlay<'b>(
@@ -382,113 +414,31 @@ where
         self.column.size()
     }
 
+    fn frame_interest(&self, tree: &Tree) -> bool {
+        self.column.frame_interest(tree)
+    }
+
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
-        let limits = limits
-            .width(self.column.width)
-            .height(self.column.height)
-            .shrink(self.column.padding);
-
-        let child_limits = limits.loose();
-        let spacing = self.column.spacing;
-        let horizontal_spacing = self.horizontal_spacing.unwrap_or(spacing);
-        let max_height = limits.bounds().height;
-
-        let mut intrinsic_size = Size::ZERO;
-        let mut column_start = 0;
-        let mut column_width = 0.0;
-        let mut x = 0.0;
-        let mut y = 0.0;
-
-        let align_factor = match self.column.align {
-            Alignment::Start => 0.0,
-            Alignment::Center => 2.0,
-            Alignment::End => 1.0,
-        };
-
-        let align_x =
-            |column_start: std::ops::Range<usize>, column_width: f32, children: &mut [Tree]| {
-                if align_factor != 0.0 {
-                    for child in &mut children[column_start] {
-                        let width = child.size.width;
-
-                        child.translation.x += (column_width - width) / align_factor;
-                    }
-                }
-            };
-
-        for (i, child) in self.column.children.iter_mut().enumerate() {
-            child
-                .as_widget_mut()
-                .layout(&mut tree.children[i], renderer, &child_limits);
-
-            let child_size = tree.children[i].size;
-
-            if y != 0.0 && y + child_size.height > max_height {
-                intrinsic_size.height = intrinsic_size.height.max(y - spacing);
-
-                align_x(column_start..i, column_width, &mut tree.children);
-
-                x += column_width + horizontal_spacing;
-                y = 0.0;
-                column_start = i;
-                column_width = 0.0;
-            }
-
-            column_width = column_width.max(child_size.width);
-
-            tree.children[i].translation =
-                Vector::new(x + self.column.padding.left, y + self.column.padding.top);
-
-            y += child_size.height + spacing;
-        }
-
-        if y != 0.0 {
-            intrinsic_size.height = intrinsic_size.height.max(y - spacing);
-        }
-
-        intrinsic_size.width = x + column_width;
-        align_x(
-            column_start..tree.children.len(),
-            column_width,
+        layout::flow::resolve(
+            renderer,
+            limits,
+            layout::flow::Rule {
+                axis: layout::flow::Axis::Vertical,
+                sizing: Size::new(self.column.width, self.column.height),
+                padding: self.column.padding,
+                gaps: [
+                    self.column.spacing,
+                    self.horizontal_spacing.unwrap_or(self.column.spacing),
+                ],
+                cross_alignment: self.column.align,
+                main_alignment: self.align_y.into(),
+            },
+            &mut self.column.children,
             &mut tree.children,
-        );
-
-        let align_factor = match self.align_y {
-            alignment::Vertical::Top => 0.0,
-            alignment::Vertical::Center => 2.0,
-            alignment::Vertical::Bottom => 1.0,
-        };
-
-        if align_factor != 0.0 {
-            let total_height = intrinsic_size.height;
-
-            let mut column_start = 0;
-
-            for i in 0..tree.children.len() {
-                let column_height = tree.children[i].translation.y + tree.children[i].size.height;
-
-                let next_y = tree
-                    .children
-                    .get(i + 1)
-                    .map(|child| child.translation.y)
-                    .unwrap_or_default();
-
-                if next_y == 0.0 {
-                    let translation =
-                        Vector::new(0.0, (total_height - column_height) / align_factor);
-
-                    for child in &mut tree.children[column_start..=i] {
-                        child.translation += translation;
-                    }
-
-                    column_start = i + 1;
-                }
-            }
-        }
-
-        let size = limits.resolve(self.column.width, self.column.height, intrinsic_size);
-
-        tree.size = size.expand(self.column.padding);
+        )
+        .with_drawing_cull(self.column.clip)
+        .with_child_drawing_culls()
+        .apply(tree);
     }
 
     fn operate(
@@ -515,6 +465,20 @@ where
     ) {
         self.column
             .update(tree, event, layout, cursor, renderer, shell, viewport);
+    }
+
+    fn update_frame(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.column
+            .update_frame(tree, event, layout, cursor, renderer, shell, viewport);
     }
 
     fn mouse_interaction(
@@ -566,5 +530,600 @@ where
 {
     fn from(column: Wrapping<'a, Message, Theme, Renderer>) -> Self {
         Self::new(column)
+    }
+}
+
+#[cfg(test)]
+mod frame_routing_tests {
+    use super::Column;
+    use crate::core::layout;
+    use crate::core::mouse;
+    use crate::core::renderer;
+    use crate::core::shell;
+    use crate::core::time::Instant;
+    use crate::core::widget::Tree;
+    use crate::core::window;
+    use crate::core::{Element, Event, Layout, Length, Rectangle, Shell, Size, Widget};
+    use iced_runtime::user_interface::{self, UserInterface};
+
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[derive(Clone)]
+    struct Probe {
+        active: Rc<Cell<bool>>,
+        frame_updates: Rc<Cell<usize>>,
+        all_updates: Rc<Cell<usize>>,
+        interest_queries: Rc<Cell<usize>>,
+    }
+
+    impl Widget<(), (), ()> for Probe {
+        fn size(&self) -> Size<Length> {
+            Size::new(Length::Shrink, Length::Shrink)
+        }
+
+        fn frame_interest(&self, _tree: &Tree) -> bool {
+            self.interest_queries.set(self.interest_queries.get() + 1);
+            self.active.get()
+        }
+
+        fn layout(&mut self, tree: &mut Tree, _renderer: &(), _limits: &layout::Limits) {
+            layout::Node::new(Size::ZERO).apply(tree);
+        }
+
+        fn update(
+            &mut self,
+            _tree: &mut Tree,
+            event: &Event,
+            _layout: Layout,
+            _cursor: mouse::Cursor,
+            _renderer: &(),
+            shell: &mut Shell<'_, ()>,
+            _viewport: &Rectangle,
+        ) {
+            self.all_updates.set(self.all_updates.get() + 1);
+
+            if matches!(event, Event::Window(window::Event::RedrawRequested(_))) {
+                self.frame_updates.set(self.frame_updates.get() + 1);
+
+                if self.active.get() {
+                    shell.request_redraw();
+                }
+            }
+        }
+
+        fn draw(
+            &self,
+            _tree: &Tree,
+            _renderer: &mut (),
+            _theme: &(),
+            _style: &renderer::Style,
+            _layout: Layout,
+            _cursor: mouse::Cursor,
+            _viewport: &Rectangle,
+        ) {
+        }
+    }
+
+    struct WakeProbe {
+        active: Rc<Cell<bool>>,
+        frames: Rc<Cell<usize>>,
+    }
+
+    impl Widget<(), (), ()> for WakeProbe {
+        fn size(&self) -> Size<Length> {
+            Size::new(Length::Shrink, Length::Shrink)
+        }
+
+        fn frame_interest(&self, _tree: &Tree) -> bool {
+            self.active.get()
+        }
+
+        fn layout(&mut self, tree: &mut Tree, _renderer: &(), _limits: &layout::Limits) {
+            layout::Node::new(Size::ZERO).apply(tree);
+        }
+
+        fn update(
+            &mut self,
+            _tree: &mut Tree,
+            event: &Event,
+            _layout: Layout,
+            _cursor: mouse::Cursor,
+            _renderer: &(),
+            shell: &mut Shell<'_, ()>,
+            _viewport: &Rectangle,
+        ) {
+            match event {
+                Event::Window(window::Event::Focused) => {
+                    self.active.set(true);
+                    shell.request_redraw();
+                }
+                Event::Window(window::Event::RedrawRequested(_)) => {
+                    self.frames.set(self.frames.get() + 1);
+                }
+                _ => {}
+            }
+        }
+
+        fn draw(
+            &self,
+            _tree: &Tree,
+            _renderer: &mut (),
+            _theme: &(),
+            _style: &renderer::Style,
+            _layout: Layout,
+            _cursor: mouse::Cursor,
+            _viewport: &Rectangle,
+        ) {
+        }
+    }
+
+    struct OneShotProbe {
+        active: Rc<Cell<bool>>,
+        frames: Rc<Cell<usize>>,
+    }
+
+    impl Widget<(), (), ()> for OneShotProbe {
+        fn size(&self) -> Size<Length> {
+            Size::new(Length::Shrink, Length::Shrink)
+        }
+
+        fn frame_interest(&self, _tree: &Tree) -> bool {
+            self.active.get()
+        }
+
+        fn layout(&mut self, tree: &mut Tree, _renderer: &(), _limits: &layout::Limits) {
+            layout::Node::new(Size::ZERO).apply(tree);
+        }
+
+        fn update(
+            &mut self,
+            _tree: &mut Tree,
+            event: &Event,
+            _layout: Layout,
+            _cursor: mouse::Cursor,
+            _renderer: &(),
+            _shell: &mut Shell<'_, ()>,
+            _viewport: &Rectangle,
+        ) {
+            if matches!(event, Event::Window(window::Event::RedrawRequested(_))) {
+                self.frames.set(self.frames.get() + 1);
+                self.active.set(false);
+            }
+        }
+
+        fn draw(
+            &self,
+            _tree: &Tree,
+            _renderer: &mut (),
+            _theme: &(),
+            _style: &renderer::Style,
+            _layout: Layout,
+            _cursor: mouse::Cursor,
+            _viewport: &Rectangle,
+        ) {
+        }
+    }
+
+    struct FallbackProbe(Rc<Cell<usize>>);
+
+    impl Widget<(), (), ()> for FallbackProbe {
+        fn size(&self) -> Size<Length> {
+            Size::new(Length::Shrink, Length::Shrink)
+        }
+
+        fn layout(&mut self, tree: &mut Tree, _renderer: &(), _limits: &layout::Limits) {
+            layout::Node::new(Size::ZERO).apply(tree);
+        }
+
+        fn update(
+            &mut self,
+            _tree: &mut Tree,
+            event: &Event,
+            _layout: Layout,
+            _cursor: mouse::Cursor,
+            _renderer: &(),
+            _shell: &mut Shell<'_, ()>,
+            _viewport: &Rectangle,
+        ) {
+            if matches!(event, Event::Window(window::Event::RedrawRequested(_))) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+
+        fn draw(
+            &self,
+            _tree: &Tree,
+            _renderer: &mut (),
+            _theme: &(),
+            _style: &renderer::Style,
+            _layout: Layout,
+            _cursor: mouse::Cursor,
+            _viewport: &Rectangle,
+        ) {
+        }
+    }
+
+    fn explicit_probe(
+        active: Rc<Cell<bool>>,
+        frame_updates: Rc<Cell<usize>>,
+        all_updates: Rc<Cell<usize>>,
+    ) -> Element<'static, (), (), ()> {
+        explicit_probe_counted(active, frame_updates, all_updates, Rc::new(Cell::new(0)))
+    }
+
+    fn explicit_probe_counted(
+        active: Rc<Cell<bool>>,
+        frame_updates: Rc<Cell<usize>>,
+        all_updates: Rc<Cell<usize>>,
+        interest_queries: Rc<Cell<usize>>,
+    ) -> Element<'static, (), (), ()> {
+        Element::new(Probe {
+            active,
+            frame_updates,
+            all_updates,
+            interest_queries,
+        })
+    }
+
+    fn frame(ui: &mut UserInterface<'_, (), (), ()>, renderer: &mut ()) -> window::RedrawRequest {
+        dispatch(
+            ui,
+            renderer,
+            Event::Window(window::Event::RedrawRequested(Instant::now())),
+        )
+    }
+
+    fn dispatch(
+        ui: &mut UserInterface<'_, (), (), ()>,
+        renderer: &mut (),
+        event: Event,
+    ) -> window::RedrawRequest {
+        let mut messages = crate::core::shell::Bus::new();
+        let (state, statuses) = ui.update(
+            &window::Headless,
+            &shell::Waker::noop(),
+            &[event],
+            mouse::Cursor::Unavailable,
+            renderer,
+            &mut messages,
+        );
+
+        assert_eq!(statuses.len(), 1);
+        match state {
+            user_interface::State::Updated { redraw_request, .. } => redraw_request,
+            user_interface::State::Outdated => panic!("probe UI unexpectedly became outdated"),
+        }
+    }
+
+    fn build(
+        root: impl Into<Element<'static, (), (), ()>>,
+        cache: user_interface::Cache,
+        renderer: &mut (),
+    ) -> UserInterface<'static, (), (), ()> {
+        UserInterface::build(root, Size::new(100.0, 100.0), cache, renderer)
+    }
+
+    #[test]
+    fn one_listener_skips_ten_thousand_static_siblings_for_one_thousand_frames() {
+        let active = Rc::new(Cell::new(true));
+        let listener_frames = Rc::new(Cell::new(0));
+        let static_frames = Rc::new(Cell::new(0));
+        let all_updates = Rc::new(Cell::new(0));
+        let mut children = Vec::with_capacity(10_001);
+
+        for _ in 0..10_000 {
+            children.push(explicit_probe(
+                Rc::new(Cell::new(false)),
+                static_frames.clone(),
+                all_updates.clone(),
+            ));
+        }
+        children.push(explicit_probe(
+            active,
+            listener_frames.clone(),
+            all_updates.clone(),
+        ));
+
+        let mut renderer = ();
+        let mut ui = build(
+            Column::with_children(children),
+            user_interface::Cache::new(),
+            &mut renderer,
+        );
+
+        for _ in 0..1_000 {
+            assert_eq!(
+                frame(&mut ui, &mut renderer),
+                window::RedrawRequest::NextFrame
+            );
+        }
+
+        assert_eq!(listener_frames.get(), 1_000);
+        assert_eq!(
+            static_frames.get(),
+            0,
+            "10,000 static sibling branches must receive zero ticks per frame"
+        );
+        assert_eq!(all_updates.get(), 1_000);
+        assert_eq!(ui.frame_route_counts(), (2, 1));
+    }
+
+    #[test]
+    fn routing_count_matrix_is_independent_of_static_sibling_count() {
+        const FRAMES: usize = 1_000;
+
+        for static_siblings in [100, 1_000, 10_000] {
+            for active_listeners in [1, 10, 100] {
+                let static_frames = Rc::new(Cell::new(0));
+                let listener_frames = Rc::new(Cell::new(0));
+                let all_updates = Rc::new(Cell::new(0));
+                let static_interest_queries = Rc::new(Cell::new(0));
+                let listener_interest_queries = Rc::new(Cell::new(0));
+                let mut children = Vec::with_capacity(static_siblings + active_listeners);
+
+                children.extend((0..static_siblings).map(|_| {
+                    explicit_probe_counted(
+                        Rc::new(Cell::new(false)),
+                        static_frames.clone(),
+                        all_updates.clone(),
+                        static_interest_queries.clone(),
+                    )
+                }));
+                children.extend((0..active_listeners).map(|_| {
+                    explicit_probe_counted(
+                        Rc::new(Cell::new(true)),
+                        listener_frames.clone(),
+                        all_updates.clone(),
+                        listener_interest_queries.clone(),
+                    )
+                }));
+
+                let mut renderer = ();
+                let mut ui = build(
+                    Column::with_children(children),
+                    user_interface::Cache::new(),
+                    &mut renderer,
+                );
+
+                assert!(static_siblings >= 100, "benchmark floor must not shrink");
+                assert_eq!(
+                    ui.frame_route_counts(),
+                    (active_listeners + 1, active_listeners),
+                    "route counts must be derived from the reconciled tree"
+                );
+                let registration_queries =
+                    static_interest_queries.get() + listener_interest_queries.get();
+                assert!(
+                    registration_queries >= static_siblings + active_listeners,
+                    "reconciliation must inspect every newly registered widget"
+                );
+
+                for _ in 0..FRAMES {
+                    assert_eq!(
+                        frame(&mut ui, &mut renderer),
+                        window::RedrawRequest::NextFrame
+                    );
+                }
+
+                assert_eq!(static_frames.get(), 0);
+                assert_eq!(listener_frames.get(), active_listeners * FRAMES);
+                assert_eq!(all_updates.get(), active_listeners * FRAMES);
+                assert_eq!(static_interest_queries.get(), static_siblings * 2);
+                assert_eq!(
+                    listener_interest_queries.get(),
+                    active_listeners * (FRAMES + 2)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shared_and_disjoint_listener_paths_receive_each_frame_once() {
+        let shared_left_frames = Rc::new(Cell::new(0));
+        let shared_right_frames = Rc::new(Cell::new(0));
+        let disjoint_frames = Rc::new(Cell::new(0));
+        let updates = Rc::new(Cell::new(0));
+        let listener = |frames: Rc<Cell<usize>>| {
+            explicit_probe(Rc::new(Cell::new(true)), frames, updates.clone())
+        };
+        let shared: Element<'static, (), (), ()> = Column::with_children([
+            listener(shared_left_frames.clone()),
+            listener(shared_right_frames.clone()),
+        ])
+        .into();
+        let disjoint: Element<'static, (), (), ()> =
+            Column::with_children([listener(disjoint_frames.clone())]).into();
+
+        let mut renderer = ();
+        let mut ui = build(
+            Column::with_children([shared, disjoint]),
+            user_interface::Cache::new(),
+            &mut renderer,
+        );
+
+        assert_eq!(
+            frame(&mut ui, &mut renderer),
+            window::RedrawRequest::NextFrame
+        );
+        assert_eq!(
+            shared_left_frames.get(),
+            1,
+            "listener path root/shared[0] missed its presented-frame tick"
+        );
+        assert_eq!(
+            shared_right_frames.get(),
+            1,
+            "listener path root/shared[1] missed its presented-frame tick"
+        );
+        assert_eq!(
+            disjoint_frames.get(),
+            1,
+            "listener path root/disjoint[0] missed its presented-frame tick"
+        );
+        assert_eq!(updates.get(), 3);
+        assert_eq!(ui.frame_route_counts(), (6, 3));
+    }
+
+    #[test]
+    fn moving_stopping_and_removing_listener_reconciles_cached_paths() {
+        let active = Rc::new(Cell::new(true));
+        let frames = Rc::new(Cell::new(0));
+        let updates = Rc::new(Cell::new(0));
+        let static_probe = || {
+            explicit_probe(
+                Rc::new(Cell::new(false)),
+                Rc::new(Cell::new(0)),
+                Rc::new(Cell::new(0)),
+            )
+        };
+        let listener = || explicit_probe(active.clone(), frames.clone(), updates.clone());
+        let mut renderer = ();
+
+        let left: Element<'static, (), (), ()> = Column::with_children([listener()]).into();
+        let right: Element<'static, (), (), ()> = Column::with_children([static_probe()]).into();
+        let mut ui = build(
+            Column::with_children([left, right]),
+            user_interface::Cache::new(),
+            &mut renderer,
+        );
+        assert_eq!(ui.frame_route_counts(), (3, 1));
+        assert_eq!(
+            frame(&mut ui, &mut renderer),
+            window::RedrawRequest::NextFrame
+        );
+        assert_eq!(frames.get(), 1);
+
+        let cache = ui.into_cache();
+        let left: Element<'static, (), (), ()> = Column::with_children([static_probe()]).into();
+        let right: Element<'static, (), (), ()> = Column::with_children([listener()]).into();
+        let mut ui = build(Column::with_children([left, right]), cache, &mut renderer);
+        assert_eq!(ui.frame_route_counts(), (3, 1));
+        assert_eq!(
+            frame(&mut ui, &mut renderer),
+            window::RedrawRequest::NextFrame
+        );
+        assert_eq!(frames.get(), 2);
+
+        active.set(false);
+        let cache = ui.into_cache();
+        let left: Element<'static, (), (), ()> = Column::with_children([static_probe()]).into();
+        let right: Element<'static, (), (), ()> = Column::with_children([listener()]).into();
+        let mut ui = build(Column::with_children([left, right]), cache, &mut renderer);
+        assert_eq!(ui.frame_route_counts(), (0, 0));
+        assert_eq!(frame(&mut ui, &mut renderer), window::RedrawRequest::Wait);
+        assert_eq!(frames.get(), 2);
+
+        let cache = ui.into_cache();
+        let mut ui = build(
+            Column::with_children([static_probe()]),
+            cache,
+            &mut renderer,
+        );
+        assert_eq!(ui.frame_route_counts(), (0, 0));
+        assert_eq!(frame(&mut ui, &mut renderer), window::RedrawRequest::Wait);
+        assert_eq!(frames.get(), 2);
+    }
+
+    #[test]
+    fn listener_started_by_a_non_frame_event_joins_the_next_frame() {
+        let active = Rc::new(Cell::new(false));
+        let frames = Rc::new(Cell::new(0));
+        let root: Column<'static, (), (), ()> = Column::with_children([Element::new(WakeProbe {
+            active: active.clone(),
+            frames: frames.clone(),
+        })]);
+        let mut renderer = ();
+        let mut ui = build(root, user_interface::Cache::new(), &mut renderer);
+
+        assert_eq!(ui.frame_route_counts(), (0, 0));
+        assert_eq!(
+            dispatch(
+                &mut ui,
+                &mut renderer,
+                Event::Window(window::Event::Focused),
+            ),
+            window::RedrawRequest::NextFrame
+        );
+        assert!(active.get());
+        assert_eq!(ui.frame_route_counts(), (2, 1));
+
+        assert_eq!(frame(&mut ui, &mut renderer), window::RedrawRequest::Wait);
+        assert_eq!(frames.get(), 1);
+    }
+
+    #[test]
+    fn listener_that_stops_during_a_frame_is_removed_without_a_rebuild() {
+        let active = Rc::new(Cell::new(true));
+        let frames = Rc::new(Cell::new(0));
+        let root: Column<'static, (), (), ()> =
+            Column::with_children([Element::new(OneShotProbe {
+                active: active.clone(),
+                frames: frames.clone(),
+            })]);
+        let mut renderer = ();
+        let mut ui = build(root, user_interface::Cache::new(), &mut renderer);
+
+        assert_eq!(ui.frame_route_counts(), (2, 1));
+        assert_eq!(frame(&mut ui, &mut renderer), window::RedrawRequest::Wait);
+        assert!(!active.get());
+        assert_eq!(frames.get(), 1);
+
+        assert_eq!(frame(&mut ui, &mut renderer), window::RedrawRequest::Wait);
+        assert_eq!(
+            frames.get(),
+            1,
+            "stopped listener path root/one-shot must not receive another tick"
+        );
+        assert_eq!(ui.frame_route_counts(), (0, 0));
+    }
+
+    #[test]
+    fn non_frame_window_events_still_reach_every_sibling() {
+        let updates = Rc::new(Cell::new(0));
+        let mut children = Vec::with_capacity(101);
+
+        children.extend((0..100).map(|_| {
+            explicit_probe(
+                Rc::new(Cell::new(false)),
+                Rc::new(Cell::new(0)),
+                updates.clone(),
+            )
+        }));
+        children.push(explicit_probe(
+            Rc::new(Cell::new(true)),
+            Rc::new(Cell::new(0)),
+            updates.clone(),
+        ));
+
+        let mut renderer = ();
+        let mut ui = build(
+            Column::with_children(children),
+            user_interface::Cache::new(),
+            &mut renderer,
+        );
+
+        assert_eq!(
+            dispatch(
+                &mut ui,
+                &mut renderer,
+                Event::Window(window::Event::Focused),
+            ),
+            window::RedrawRequest::Wait
+        );
+        assert_eq!(updates.get(), 101);
+    }
+
+    #[test]
+    fn custom_widget_without_interest_contract_uses_conservative_fallback() {
+        let frames = Rc::new(Cell::new(0));
+        let root: Column<'static, (), (), ()> =
+            Column::with_children([Element::new(FallbackProbe(frames.clone()))]);
+        let mut renderer = ();
+        let mut ui = build(root, user_interface::Cache::new(), &mut renderer);
+
+        assert_eq!(ui.frame_route_counts(), (2, 1));
+        assert_eq!(frame(&mut ui, &mut renderer), window::RedrawRequest::Wait);
+        assert_eq!(frames.get(), 1);
     }
 }

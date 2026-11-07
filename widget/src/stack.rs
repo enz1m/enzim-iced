@@ -1,5 +1,7 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Display content on top of other content.
 use crate::core::layout;
+use crate::core::layout::Measure as _;
 use crate::core::mouse;
 use crate::core::overlay;
 use crate::core::renderer;
@@ -141,35 +143,34 @@ where
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
-        let limits = limits.width(self.width).height(self.height);
+        let sizing = Size::new(self.width, self.height);
+        let children = self
+            .children
+            .iter()
+            .map(|child| child.as_widget().size())
+            .collect();
+        let node = match layout::overlay::try_resolve(
+            limits,
+            sizing,
+            self.base_layer,
+            self.children.len(),
+            |index, limits| {
+                Ok::<_, std::convert::Infallible>(self.children[index].as_widget_mut().measure(
+                    &mut tree.children[index],
+                    renderer,
+                    limits,
+                ))
+            },
+        ) {
+            Ok(node) => node,
+            Err(error) => match error {},
+        };
+        node.with_overlay_presentation(*limits, sizing, self.base_layer, children)
+            .apply(tree);
+    }
 
-        if self.children.len() <= self.base_layer {
-            tree.size = limits.resolve(self.width, self.height, Size::ZERO);
-            return;
-        }
-
-        self.children[self.base_layer].as_widget_mut().layout(
-            &mut tree.children[self.base_layer],
-            renderer,
-            &limits,
-        );
-
-        let size = limits.resolve(self.width, self.height, tree.children[self.base_layer].size);
-        let limits = layout::Limits::new(Size::ZERO, size);
-
-        let (under, above) = self.children.split_at_mut(self.base_layer);
-        let (tree_under, tree_above) = tree.children.split_at_mut(self.base_layer);
-
-        under.iter_mut().zip(tree_under).for_each(|(layer, tree)| {
-            layer.as_widget_mut().layout(tree, renderer, &limits);
-        });
-
-        above[1..]
-            .iter_mut()
-            .zip(&mut tree_above[1..])
-            .for_each(|(layer, tree)| layer.as_widget_mut().layout(tree, renderer, &limits));
-
-        tree.size = size;
+    fn frame_interest(&self, tree: &Tree) -> bool {
+        !tree.frame_children.is_empty()
     }
 
     fn operate(
@@ -210,29 +211,126 @@ where
         let is_over = cursor.is_over(layout.bounds());
         let end = self.children.len() - 1;
 
-        for (i, (child, (layout, tree))) in self
-            .children
-            .iter_mut()
-            .rev()
-            .zip(layout.iter_mut(&mut tree.children).rev())
-            .enumerate()
-        {
-            child
-                .as_widget_mut()
-                .update(tree, event, layout, cursor, renderer, shell, viewport);
+        for index in (0..self.children.len()).rev() {
+            let reverse_position = self.children.len() - index - 1;
+            let child = &mut self.children[index];
+            let child_layout = layout.child(&tree.children, index);
+            let child_tree = &mut tree.children[index];
+
+            child.as_widget_mut().update(
+                child_tree,
+                event,
+                child_layout,
+                cursor,
+                renderer,
+                shell,
+                viewport,
+            );
+            child_tree.refresh_frame_interest(child.as_widget());
+
+            let interaction = if reverse_position < end && is_over && !cursor.is_levitating() {
+                child.as_widget().mouse_interaction(
+                    child_tree,
+                    child_layout,
+                    cursor,
+                    viewport,
+                    renderer,
+                )
+            } else {
+                mouse::Interaction::None
+            };
+
+            tree.refresh_frame_child(index);
 
             if shell.is_event_captured() {
+                if matches!(
+                    event,
+                    Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                        | Event::Touch(crate::core::touch::Event::FingerPressed { .. })
+                ) {
+                    // Skipped layers must release focus without receiving the captured press.
+                    let mut unfocus = crate::core::widget::operation::focusable::unfocus::<()>();
+                    for skipped in 0..index {
+                        let skipped_layout = layout.child(&tree.children, skipped);
+                        self.children[skipped].as_widget_mut().operate(
+                            &mut tree.children[skipped],
+                            skipped_layout,
+                            viewport,
+                            renderer,
+                            &mut unfocus,
+                        );
+                    }
+                    shell.request_redraw();
+                }
                 return;
             }
 
-            if i < end && is_over && !cursor.is_levitating() {
-                let interaction = child
-                    .as_widget()
-                    .mouse_interaction(tree, layout, cursor, viewport, renderer);
+            if interaction != mouse::Interaction::None {
+                cursor = cursor.levitate();
+            }
+        }
+    }
 
-                if interaction != mouse::Interaction::None {
-                    cursor = cursor.levitate();
-                }
+    fn update_frame(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        // A layer without frame interest can still shield the cursor for layers below it.
+        let shielding_layer = if cursor.is_over(layout.bounds()) && cursor.is_over(*viewport) {
+            self.children
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, child)| {
+                    let child_layout = layout.child(&tree.children, index);
+                    (child.as_widget().mouse_interaction(
+                        &tree.children[index],
+                        child_layout,
+                        cursor,
+                        viewport,
+                        renderer,
+                    ) != mouse::Interaction::None)
+                        .then_some(index)
+                })
+        } else {
+            None
+        };
+        let mut route = tree.frame_children.len();
+
+        while route > 0 {
+            route -= 1;
+            let index = tree.frame_children[route];
+            let child = &mut self.children[index];
+            let child_layout = layout.child(&tree.children, index);
+            let child_tree = &mut tree.children[index];
+
+            child.as_widget_mut().update_frame(
+                child_tree,
+                event,
+                child_layout,
+                if shielding_layer.is_some_and(|shield| index < shield) {
+                    cursor.levitate()
+                } else {
+                    cursor
+                },
+                renderer,
+                shell,
+                viewport,
+            );
+            child_tree.refresh_frame_interest(child.as_widget());
+
+            if !child_tree.has_frame_interest() {
+                let _ = tree.frame_children.remove(route);
+            }
+
+            if shell.is_event_captured() {
+                return;
             }
         }
     }
@@ -304,11 +402,21 @@ where
             let mut draw_layer =
                 |i, layer: &Element<'a, Message, Theme, Renderer>, tree, layout, cursor| {
                     if i > 0 {
-                        renderer.with_layer(*viewport, |renderer| {
+                        let draw = |renderer: &mut Renderer| {
                             layer
                                 .as_widget()
                                 .draw(tree, renderer, theme, style, layout, cursor, viewport);
-                        });
+                        };
+                        if self.clip {
+                            renderer.with_layer(*viewport, draw);
+                        } else {
+                            renderer.with_layout_layer(
+                                renderer::LayoutLayer::Inherited,
+                                *viewport,
+                                None,
+                                draw,
+                            );
+                        }
                     } else {
                         layer
                             .as_widget()

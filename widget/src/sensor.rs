@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Generate messages when content pops in and out of view.
 use crate::core::layout;
 use crate::core::mouse;
@@ -265,7 +266,7 @@ where
             .as_widget_mut()
             .layout(&mut tree.children[0], renderer, limits);
 
-        tree.size = tree.children[0].size;
+        crate::core::layout::pass_through(tree, 0);
     }
 
     fn draw(

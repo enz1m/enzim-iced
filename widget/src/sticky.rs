@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Stick elements to the viewport!
 //!
 //! [`Sticky`] keeps its contents visible when they would otherwise go out of
@@ -134,7 +135,7 @@ where
             .as_widget_mut()
             .layout(&mut tree.children[0], renderer, limits);
 
-        tree.size = tree.children[0].size;
+        crate::core::layout::pass_through(tree, 0);
     }
 
     fn operate(
@@ -147,9 +148,16 @@ where
     ) {
         let state = tree.state.downcast_ref::<State>();
 
-        if state.is_stuck {
-            return;
-        }
+        // enzICED: stuck contents are operated here, in tree order and at the
+        // position they are stuck at, rather than by the overlay. An operation
+        // pass (accessibility, focus traversal) then finds them inside their
+        // parent, where they are read, instead of after every other widget.
+        let layout = match layout.parent() {
+            Some(parent) if state.is_stuck => {
+                layout.move_to(stuck_position(layout.bounds(), *viewport, parent))
+            }
+            _ => layout,
+        };
 
         self.content.as_widget_mut().operate(
             &mut tree.children[0],
@@ -271,25 +279,7 @@ where
             && state.is_stuck
         {
             let viewport = *viewport + translation;
-            let bounds = bounds + translation;
-            let parent = parent + translation;
-
-            let position = Point::new(
-                stuck_axis(
-                    bounds.x,
-                    bounds.width,
-                    viewport.x,
-                    viewport.width,
-                    (parent.x, parent.x + parent.width),
-                ),
-                stuck_axis(
-                    bounds.y,
-                    bounds.height,
-                    viewport.y,
-                    viewport.height,
-                    (parent.y, parent.y + parent.height),
-                ),
-            );
+            let position = stuck_position(bounds + translation, viewport, parent + translation);
 
             vec![overlay::Element::new(Box::new(Overlay {
                 content: &mut self.content,
@@ -323,6 +313,27 @@ where
 /// contents are larger than their intersection, the contents are kept
 /// attached to the edge of the parent instead, so that they keep their
 /// original bounds.
+/// Where contents with the given `bounds` float, inside `viewport` and
+/// `parent`.
+fn stuck_position(bounds: Rectangle, viewport: Rectangle, parent: Rectangle) -> Point {
+    Point::new(
+        stuck_axis(
+            bounds.x,
+            bounds.width,
+            viewport.x,
+            viewport.width,
+            (parent.x, parent.x + parent.width),
+        ),
+        stuck_axis(
+            bounds.y,
+            bounds.height,
+            viewport.y,
+            viewport.height,
+            (parent.y, parent.y + parent.height),
+        ),
+    )
+}
+
 fn stuck_axis(
     position: f32,
     size: f32,
@@ -387,13 +398,9 @@ impl<Message, Theme, Renderer> core::Overlay<Message, Theme, Renderer>
 where
     Renderer: core::Renderer,
 {
-    fn operate(&mut self, renderer: &Renderer, operation: &mut dyn widget::Operation) {
-        let bounds = self.bounds();
-
-        self.content
-            .as_widget_mut()
-            .operate(self.tree, self.layout, &bounds, renderer, operation);
-    }
+    // enzICED: `Sticky::operate` operates stuck contents in place, so the
+    // overlay does not visit them a second time.
+    fn operate(&mut self, _renderer: &Renderer, _operation: &mut dyn widget::Operation) {}
 
     fn update(
         &mut self,

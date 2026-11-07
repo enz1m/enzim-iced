@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Containers let you align a widget inside their boundaries.
 //!
 //! # Example
@@ -27,7 +28,7 @@ use crate::core::mouse;
 use crate::core::overlay;
 use crate::core::renderer;
 use crate::core::theme;
-use crate::core::widget::tree::{self, Tree};
+use crate::core::widget::Tree;
 use crate::core::widget::{self, Operation};
 use crate::core::{
     self, Background, Color, Element, Event, Layout, Length, Padding, Rectangle, Shadow, Shell,
@@ -203,13 +204,10 @@ where
     Theme: Catalog,
     Renderer: core::Renderer,
 {
-    fn tag(&self) -> tree::Tag {
-        self.content.as_widget().tag()
-    }
-
-    fn state(&self) -> tree::State {
-        self.content.as_widget().state()
-    }
+    // enzICED: the content owns a child tree, so the container is
+    // stateless. Upstream still reports the content's tag and state, which
+    // leaves a never-updated duplicate of the content's state on the
+    // container that tag-based tree searches mistake for the content's.
 
     fn diff(&mut self, tree: &mut Tree) {
         tree.diff_children(std::slice::from_mut(&mut self.content));
@@ -226,8 +224,18 @@ where
         }
     }
 
+    fn frame_interest(&self, tree: &Tree) -> bool {
+        tree.children.first().is_none_or(Tree::has_frame_interest)
+    }
+
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
-        layout(
+        // A tree built with `Tree::new` and laid out before any `diff` has
+        // no child yet; the content used to share this tree (enzICED).
+        if tree.children.is_empty() {
+            tree.diff_children(std::slice::from_mut(&mut self.content));
+        }
+
+        layout_node(
             tree,
             limits,
             self.width,
@@ -239,7 +247,9 @@ where
                 self.content.as_widget_mut().layout(tree, renderer, limits);
                 tree.size
             },
-        );
+        )
+        .with_drawing_cull(self.clip)
+        .apply(tree);
     }
 
     fn operate(
@@ -276,11 +286,30 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        let (layout, tree) = layout.iter_mut(&mut tree.children).next().unwrap();
+        let (layout, content) = layout.iter_mut(&mut tree.children).next().unwrap();
 
         self.content
             .as_widget_mut()
-            .update(tree, event, layout, cursor, renderer, shell, viewport);
+            .update(content, event, layout, cursor, renderer, shell, viewport);
+        content.refresh_frame_interest(self.content.as_widget());
+    }
+
+    fn update_frame(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let (layout, content) = layout.iter_mut(&mut tree.children).next().unwrap();
+
+        self.content
+            .as_widget_mut()
+            .update_frame(content, event, layout, cursor, renderer, shell, viewport);
+        content.refresh_frame_interest(self.content.as_widget());
     }
 
     fn mouse_interaction(
@@ -311,8 +340,10 @@ where
         let bounds = layout.bounds();
         let style = theme.style(&self.class);
 
-        if let Some(clipped_viewport) = bounds.intersection(viewport) {
-            draw_background(renderer, &style, bounds);
+        layout.draw_culled(tree, renderer, viewport, |renderer, viewport| {
+            if let Some((quad, background)) = background_quad(&style, bounds) {
+                layout.fill_presentation_quad(tree, renderer, quad, background);
+            }
 
             let (layout, tree) = layout.iter(&tree.children).next().unwrap();
 
@@ -325,13 +356,9 @@ where
                 },
                 layout,
                 cursor,
-                if self.clip {
-                    &clipped_viewport
-                } else {
-                    viewport
-                },
+                viewport,
             );
-        }
+        });
     }
 
     fn overlay<'b>(
@@ -376,23 +403,51 @@ pub fn layout(
     vertical_alignment: alignment::Vertical,
     layout_content: impl FnOnce(&mut Tree, &layout::Limits) -> Size,
 ) {
-    let limits = limits.width(width).height(height);
-
-    layout::positioned(
+    layout_node(
         tree,
-        &limits,
+        limits,
         width,
         height,
         padding,
-        |tree, limits| layout_content(tree, &limits.loose()),
-        |content, container| {
-            content.align(
-                container,
-                Alignment::from(horizontal_alignment),
-                Alignment::from(vertical_alignment),
-            )
+        horizontal_alignment,
+        vertical_alignment,
+        layout_content,
+    )
+    .apply(tree);
+}
+
+/// Computes the [`layout::Node`] of a [`Container`], declaring its owned
+/// aligned presentation (enzICED).
+///
+/// `tree` must hold the content's tree as its only child.
+#[allow(clippy::too_many_arguments)]
+pub fn layout_node(
+    tree: &mut Tree,
+    limits: &layout::Limits,
+    width: Length,
+    height: Length,
+    padding: Padding,
+    horizontal_alignment: alignment::Horizontal,
+    vertical_alignment: alignment::Vertical,
+    layout_content: impl FnOnce(&mut Tree, &layout::Limits) -> Size,
+) -> layout::Node {
+    let content = &mut tree.children[0];
+
+    layout::aligned(
+        limits,
+        width,
+        height,
+        padding,
+        [
+            Alignment::from(horizontal_alignment),
+            Alignment::from(vertical_alignment),
+        ],
+        |limits| {
+            let _ = layout_content(content, limits);
+
+            layout::Node::of(content)
         },
-    );
+    )
 }
 
 /// Draws the background of a [`Container`] given its [`Style`] and its `bounds`.
@@ -400,19 +455,30 @@ pub fn draw_background<Renderer>(renderer: &mut Renderer, style: &Style, bounds:
 where
     Renderer: core::Renderer,
 {
-    if style.background.is_some() || style.border.width > 0.0 || style.shadow.color.a > 0.0 {
-        renderer.fill_quad(
-            renderer::Quad {
-                bounds,
-                border: style.border,
-                shadow: style.shadow,
-                snap: style.snap,
-            },
-            style
-                .background
-                .unwrap_or(Background::Color(Color::TRANSPARENT)),
-        );
+    if let Some((quad, background)) = background_quad(style, bounds) {
+        renderer.fill_quad(quad, background);
     }
+}
+
+pub(crate) fn background_quad(
+    style: &Style,
+    bounds: Rectangle,
+) -> Option<(renderer::Quad, Background)> {
+    (style.background.is_some() || style.border.width > 0.0 || style.shadow.color.a > 0.0).then(
+        || {
+            (
+                renderer::Quad {
+                    bounds,
+                    border: style.border,
+                    shadow: style.shadow,
+                    snap: style.snap,
+                },
+                style
+                    .background
+                    .unwrap_or(Background::Color(Color::TRANSPARENT)),
+            )
+        },
+    )
 }
 
 /// The appearance of a container.

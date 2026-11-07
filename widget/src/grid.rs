@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! Distribute content on a grid.
 use crate::core::layout::{self, Layout};
 use crate::core::mouse;
@@ -229,6 +230,10 @@ where
         tree.size = Size::new(available.width, y);
     }
 
+    fn frame_interest(&self, tree: &Tree) -> bool {
+        !tree.frame_children.is_empty()
+    }
+
     fn operate(
         &mut self,
         tree: &mut Tree,
@@ -268,6 +273,50 @@ where
             child
                 .as_widget_mut()
                 .update(tree, event, layout, cursor, renderer, shell, viewport);
+            tree.refresh_frame_interest(child.as_widget());
+        }
+        tree.refresh_frame_children();
+    }
+
+    fn update_frame(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let Tree {
+            children,
+            frame_children,
+            ..
+        } = tree;
+        let mut route = 0;
+
+        while route < frame_children.len() {
+            let index = frame_children[route];
+            let child = &mut self.children[index];
+            let child_layout = layout.child(children, index);
+            let child_tree = &mut children[index];
+
+            child.as_widget_mut().update_frame(
+                child_tree,
+                event,
+                child_layout,
+                cursor,
+                renderer,
+                shell,
+                viewport,
+            );
+            child_tree.refresh_frame_interest(child.as_widget());
+
+            if child_tree.has_frame_interest() {
+                route += 1;
+            } else {
+                let _ = frame_children.remove(route);
+            }
         }
     }
 

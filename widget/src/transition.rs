@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 //! A widget to make animated views.
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -165,31 +166,34 @@ where
             key: self.key,
             should_reset: false,
             size: None,
+            listening: true,
         })
     }
 
     fn diff(&mut self, tree: &mut Tree) {
-        let State::<P> {
-            animation,
-            key: old_key,
-            should_reset,
-            instant,
-            ..
-        } = tree.state.downcast_mut();
+        let rebuilt = {
+            let state = tree.state.downcast_mut::<State<P>>();
 
-        if *old_key != self.key {
-            *old_key = self.key;
-            *animation = (self.init)();
-            *should_reset = false;
-        }
+            if state.key != self.key {
+                state.key = self.key;
+                state.animation = (self.init)();
+                state.should_reset = false;
+            }
 
-        if let Some(next_element) = self.next_element.take() {
-            self.element = next_element;
-        } else {
-            self.element = (self.view)(animation, *instant);
-        }
+            state.listening = true;
 
+            self.next_element
+                .take()
+                .unwrap_or_else(|| (self.view)(&state.animation, state.instant))
+        };
+
+        self.element = rebuilt;
         tree.diff_children(std::slice::from_mut(&mut self.element));
+    }
+
+    fn frame_interest(&self, tree: &Tree) -> bool {
+        tree.state.downcast_ref::<State<P>>().listening
+            || tree.children.first().is_none_or(Tree::has_frame_interest)
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
@@ -199,7 +203,7 @@ where
             .as_widget_mut()
             .layout(&mut tree.children[0], renderer, &limits.loose());
 
-        tree.size = tree.children[0].size;
+        crate::core::layout::pass_through(tree, 0);
     }
 
     fn update(
@@ -213,44 +217,42 @@ where
         viewport: &Rectangle,
     ) {
         if let core::Event::Window(core::window::Event::RedrawRequested(redraw)) = event {
-            let State::<P> {
-                animation,
-                instant,
-                should_reset,
-                size,
-                ..
-            } = tree.state.downcast_mut();
+            let frame = {
+                let state = tree.state.downcast_mut::<State<P>>();
 
-            if instant == redraw {
-                shell.request_redraw();
-            } else {
-                let was_animating = animation.is_animating(*instant);
+                if state.instant == *redraw {
+                    None
+                } else {
+                    let was_animating = state.animation.is_animating(state.instant);
 
-                if *should_reset {
-                    *animation = (self.init)();
-                    *should_reset = false;
+                    if state.should_reset {
+                        state.animation = (self.init)();
+                        state.should_reset = false;
+                    }
+
+                    state.instant = *redraw;
+                    state.animation.go(self.value, state.instant);
+
+                    let is_animating = state.animation.is_animating(state.instant);
+                    let just_finished = was_animating && !is_animating;
+                    state.listening = is_animating;
+                    let new = (is_animating || just_finished)
+                        .then(|| (self.view)(&state.animation, state.instant));
+
+                    Some((new, state.size, just_finished))
                 }
+            };
 
-                *instant = *redraw;
-                animation.go(self.value, *instant);
-
-                let is_animating = animation.is_animating(*instant);
-                let just_finished = was_animating && !is_animating;
-
-                if is_animating || just_finished {
-                    let size = *size;
-
-                    let mut new = (self.view)(animation, *instant);
+            match frame {
+                None => shell.request_redraw(),
+                Some((Some(mut new), previous_size, just_finished)) => {
                     tree.diff_children(&mut [new.as_widget_mut()]);
-
                     let new_size = new.as_widget().size();
 
-                    if size != Some(new_size) {
+                    if previous_size != Some(new_size) {
                         self.next_element = Some(new);
+                        tree.state.downcast_mut::<State<P>>().size = Some(new_size);
                         shell.invalidate_layout_with(shell::Diff::Perform);
-
-                        let state = tree.state.downcast_mut::<State<P>>();
-                        state.size = Some(new_size);
                     } else {
                         self.element = new;
                         self.element.as_widget_mut().layout(
@@ -261,11 +263,12 @@ where
                     }
 
                     shell.request_redraw();
-                }
 
-                if just_finished && let Some(on_finish) = &self.on_finish {
-                    shell.publish(on_finish());
+                    if just_finished && let Some(on_finish) = &self.on_finish {
+                        shell.publish(on_finish());
+                    }
                 }
+                Some((None, _, _)) => {}
             }
         }
 
@@ -278,6 +281,7 @@ where
             shell,
             viewport,
         );
+        tree.children[0].refresh_frame_interest(self.element.as_widget());
     }
 
     fn draw(
@@ -381,6 +385,7 @@ struct State<P: Program> {
     key: Key,
     should_reset: bool,
     size: Option<Size<Length>>,
+    listening: bool,
 }
 
 #[derive(Default, Clone, Copy, Hash, PartialEq, Eq)]
