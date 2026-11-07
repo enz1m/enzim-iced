@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 use crate::alignment;
 use crate::image::{self, Image};
 use crate::renderer::{self, Renderer};
@@ -91,6 +92,10 @@ impl text::Paragraph for () {
         text::Difference::None
     }
 
+    fn grapheme_position(&self, _line: usize, _index: usize) -> Option<Point> {
+        None
+    }
+
     fn hint_factor(&self) -> Option<f32> {
         None
     }
@@ -166,6 +171,10 @@ impl text::Editor for () {
         text::editor::Selection::Caret(Point::ORIGIN)
     }
 
+    fn selection_range(&self) -> Option<std::ops::Range<text::editor::Position>> {
+        None
+    }
+
     fn copy(&self) -> Option<String> {
         None
     }
@@ -178,12 +187,21 @@ impl text::Editor for () {
         0
     }
 
-    fn perform(&mut self, _action: text::editor::Action) {}
+    fn perform(&mut self, _action: text::editor::Action) -> Option<text::editor::EditDelta> {
+        // The null editor holds no text: `with_text` discards it and `line`
+        // returns `None`. No action can change text that is not there, so
+        // there is never a delta to report.
+        None
+    }
 
     fn move_to(&mut self, _cursor: text::editor::Cursor) {}
 
     fn bounds(&self) -> Size {
         Size::ZERO
+    }
+
+    fn scroll_metrics(&mut self) -> text::editor::ScrollMetrics {
+        text::editor::ScrollMetrics::default()
     }
 
     fn hint_factor(&self) -> Option<f32> {
@@ -272,5 +290,21 @@ impl renderer::Headless for () {
         _background_color: Color,
     ) -> Vec<u8> {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_text_editor_scroll_metrics_are_empty() {
+        let mut editor = ();
+        let metrics = <() as text::Editor>::scroll_metrics(&mut editor);
+
+        assert_eq!(metrics, text::editor::ScrollMetrics::default());
+        assert_eq!(metrics.viewport, Size::ZERO);
+        assert_eq!(metrics.content, Size::ZERO);
+        assert_eq!(metrics.offset, crate::Vector::ZERO);
     }
 }

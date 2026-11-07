@@ -1,3 +1,4 @@
+// Modified by enzUI contributors. See FORK.md.
 #![allow(clippy::manual_clamp)]
 use crate::length;
 use crate::{Length, Size};
@@ -37,6 +38,38 @@ impl Limits {
             compression,
             infinite,
         }
+    }
+
+    /// No limits: zero minimum and unbounded maximum.
+    ///
+    /// enzICED compatibility for code written before upstream #3472, which
+    /// removed it.
+    pub const NONE: Limits = Limits::new(Size::ZERO, Size::INFINITE);
+
+    /// The pre-#3472 constructor: no infinite axis.
+    ///
+    /// enzICED compatibility; new code calls [`with_flags`](Self::with_flags).
+    pub const fn with_compression(min: Size, max: Size, compression: Size<bool>) -> Self {
+        Limits::with_flags(min, max, compression, Size::new(false, false))
+    }
+
+    /// The minimum [`Size`], as the pre-#3472 accessor returned it
+    /// (enzICED compatibility; the field is public now).
+    pub fn min(&self) -> Size {
+        self.min
+    }
+
+    /// The effective maximum [`Size`], as the pre-#3472 accessor meant it:
+    /// [`f32::INFINITY`] on an [`infinite`](Self::infinite) axis. This is
+    /// exactly [`bounds`](Self::bounds) (enzICED compatibility).
+    pub fn max(&self) -> Size {
+        self.bounds()
+    }
+
+    /// Whether fluid lengths are compressed, as the pre-#3472 accessor
+    /// returned it (enzICED compatibility; the field is public now).
+    pub fn compression(&self) -> Size<bool> {
+        self.compression
     }
 
     /// Returns the maximum [`Size`] of the [`Limits`].
@@ -84,11 +117,14 @@ impl Limits {
             Length::Bounded { bounds, sizing } => {
                 match bounds {
                     length::Bounds::Min(min) => {
+                        // enzICED: an incoming minimum (a floor such as
+                        // `min_height`) still holds; upstream drops it.
                         self.min.width = if self.infinite.width {
                             min
                         } else {
                             min.min(self.max.width)
-                        };
+                        }
+                        .max(self.min.width);
                     }
                     length::Bounds::Max(max) => {
                         self.max.width = if self.infinite.width {
@@ -147,11 +183,14 @@ impl Limits {
             Length::Bounded { bounds, sizing } => {
                 match bounds {
                     length::Bounds::Min(min) => {
+                        // enzICED: an incoming minimum (a floor such as
+                        // `min_height`) still holds; upstream drops it.
                         self.min.height = if self.infinite.height {
                             min
                         } else {
                             min.min(self.max.height)
-                        };
+                        }
+                        .max(self.min.height);
                     }
                     length::Bounds::Max(max) => {
                         self.max.height = if self.infinite.height {
