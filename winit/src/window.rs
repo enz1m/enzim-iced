@@ -130,11 +130,17 @@ where
             }),
         );
 
+        let content_proxy = proxy.clone();
         let waker = shell::Waker::new(move || {
             proxy.send_action(iced_runtime::Action::Event {
                 window: id,
                 event: core::Event::Waken,
             });
+        })
+        .with_content_redraw(move || {
+            content_proxy.send_action(iced_runtime::Action::Window(
+                iced_runtime::window::Action::RedrawContent(id),
+            ));
         });
 
         // enzICED #2219: per-window compositor-feedback state. The requester

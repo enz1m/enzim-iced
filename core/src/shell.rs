@@ -663,6 +663,7 @@ impl<'a, Message> Shell<'a, Message> {
 #[derive(Clone)]
 pub struct Waker {
     wake: Arc<dyn Fn() + Send + Sync + 'static>,
+    content_redraw: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
 }
 
 impl Waker {
@@ -670,7 +671,18 @@ impl Waker {
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
             wake: Arc::new(wake),
+            content_redraw: None,
         }
+    }
+
+    /// Routes content-only redraws through a thread-safe window callback.
+    #[must_use]
+    pub fn with_content_redraw(
+        mut self,
+        content_redraw: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        self.content_redraw = Some(Arc::new(content_redraw));
+        self
     }
 
     /// Creates a new [`Waker`] that does nothing.
@@ -683,6 +695,17 @@ impl Waker {
     /// You normally want to call this concurrently (e.g. from a different thread).
     pub fn wake(&self) {
         (self.wake)();
+    }
+
+    /// Requests a content-only window frame without dispatching a widget event.
+    ///
+    /// Use [`wake`](Self::wake) for layout or widget changes. Without a window
+    /// callback, this falls back to waking the runtime.
+    pub fn request_content_redraw(&self) {
+        match &self.content_redraw {
+            Some(content_redraw) => content_redraw(),
+            None => (self.wake)(),
+        }
     }
 }
 
@@ -871,6 +894,34 @@ impl Tracking {
 mod tests {
     use super::*;
     use crate::renderer::{NodeId, Track};
+
+    #[test]
+    fn a_waker_asks_for_a_content_frame_without_waking() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let woken = Arc::new(AtomicUsize::new(0));
+        let asked = Arc::new(AtomicUsize::new(0));
+        let count = |counter: &Arc<AtomicUsize>| {
+            let counter = Arc::clone(counter);
+            move || {
+                let _ = counter.fetch_add(1, Ordering::Relaxed);
+            }
+        };
+        let counts = || (woken.load(Ordering::Relaxed), asked.load(Ordering::Relaxed));
+
+        let plain = Waker::new(count(&woken));
+        plain.request_content_redraw();
+        assert_eq!(
+            counts(),
+            (1, 0),
+            "with no window to ask, the runtime is woken"
+        );
+
+        let window = Waker::new(count(&woken)).with_content_redraw(count(&asked));
+        window.clone().request_content_redraw();
+        assert_eq!(counts(), (1, 1), "the window is asked and nothing is woken");
+        window.wake();
+        assert_eq!(counts(), (2, 1), "waking is unchanged");
+    }
 
     /// A frame whose motion the published tracks carry is served along them;
     /// a redraw any widget asks for is drawn, whatever tracks other widgets

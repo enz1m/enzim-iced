@@ -236,6 +236,9 @@ pub enum Action {
     /// Redraw all the windows.
     RedrawAll,
 
+    /// Redraws custom primitive content without dispatching a widget event.
+    RedrawContent(Id),
+
     /// Recompute the layouts of all the windows.
     RelayoutAll,
 }

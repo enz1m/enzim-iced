@@ -52,8 +52,3 @@ URL creates a distinct Rust crate even when the version numbers match.
 
 Accessibility uses AccessKit's Tokio worker. The default `async-io` runtime
 must not be enabled for `accesskit_unix` alongside `tokio`.
-
-The Gitea mirror remains available at
-`http://192.168.2.86:3048/agent_c/enzim-iced.git`. Prefer the GitHub URL in
-public projects and keep every direct iced workspace dependency on one URL
-and revision.

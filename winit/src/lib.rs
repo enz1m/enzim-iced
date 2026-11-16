@@ -4004,6 +4004,11 @@ fn run_action<'a, P, C>(
                     window.request_full_redraw();
                 }
             }
+            window::Action::RedrawContent(id) => {
+                if let Some(window) = window_manager.get_mut(id) {
+                    window.request_content_redraw();
+                }
+            }
             window::Action::RelayoutAll => {
                 for (id, window) in window_manager.iter_mut() {
                     if let Some(ui) = interfaces.remove(&id) {
