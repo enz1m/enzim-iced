@@ -3,8 +3,7 @@
 Upstream: https://github.com/iced-rs/iced
 
 Upstream base: `10e9b995eb5af74dbac08ed62b01971fe7e495b2`.
-This is the latest upstream tip already merged into the installed fork,
-not an upstream update made during this preparation. The installed ledger
+This base preserves the upstream history already integrated into the fork. The installed ledger
 still named its older `23604ff2` branch point; using the integrated tip
 preserves the later upstream commits and their original authorship.
 
@@ -80,3 +79,11 @@ release test or exhaustive validation of every retained feature. See
 
 The final documentation commit introduces the preview README, this provenance
 record, dependency guide, validation results and signing instructions once.
+
+## Upstream synchronization
+
+The November 2026 integration adopts wgpu 30, updated software-rendering
+dependencies, split Wayland backend features, AccessKit 0.25 and zbus 5.19.
+Selected upstream fixes retain their original authors and source commit IDs.
+The generic-widget, selection and popover redesign remains deferred because
+it requires a coordinated migration of the framework's widget conversions.

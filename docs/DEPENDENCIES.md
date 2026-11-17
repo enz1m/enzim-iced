@@ -6,12 +6,12 @@ commit your application's Cargo.lock.
 
 | Dependency | Public source | Revision |
 | --- | --- | --- |
-| wgpu family | https://github.com/enz1m/enzim-wgpu | `7f040c8501f6838262c90ede4edfa40940fe2de8` |
+| wgpu family | https://github.com/enz1m/enzim-wgpu | `c62972c9be1326882c4b4f1939d8a2713e42d210` |
 | cosmic-text | https://github.com/enz1m/enzim-cosmic-text | `ad474131e52c0fde5979f8def2889489b50a0480` |
-| cryoglyph | https://github.com/enz1m/enzim-cryoglyph | `eeaaa5585fbb1bac004ca398cfad957fec6be5f3` |
+| cryoglyph | https://github.com/enz1m/enzim-cryoglyph | `0617a49e7b8a5c5c4cc572a3e98cda70ff1be89f` |
 | winit | https://github.com/enz1m/enzim-winit | `40eeb41f8637ef1620afa377ba006874224b6d65` |
-| AccessKit family | https://github.com/enz1m/enzim-accesskit | `e9da4a8da1825e65356f35c94325fb9438cf90d0` |
-| zbus family | https://github.com/enz1m/enzim-zbus | `815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a` |
+| AccessKit family | https://github.com/enz1m/enzim-accesskit | `7da7ac7b800fabf0bd2ba62eef23fa9117a684f4` |
+| zbus family | https://github.com/enz1m/enzim-zbus | `e182645b56d15e637bb6c8144f99ebfa7f900716` |
 
 The source dependency on softbuffer 0.4.8 is internal to this checkout, so its
 Wayland alpha fix reaches applications without a sibling checkout.
@@ -23,7 +23,7 @@ avoid depending on that moving branch in an application.
 
 ```toml
 [dependencies]
-iced = { git = "https://github.com/enz1m/enzim-iced.git", rev = "2f08824dbbac9c38278f341673ad41fefbb9a667", features = ["a11y", "tokio"] }
+iced = { git = "https://github.com/enz1m/enzim-iced.git", rev = "6fb8ed64462d5a855c16eb6c17e1dd0e8f678d38", features = ["a11y", "tokio"] }
 ```
 
 ## Workspace overrides
@@ -38,12 +38,12 @@ This is required consumer setup, not something an iced dependency can propagate.
 ```toml
 [patch.crates-io]
 winit = { git = "https://github.com/enz1m/enzim-winit.git", rev = "40eeb41f8637ef1620afa377ba006874224b6d65" }
-zbus = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
-zbus_macros = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
-zbus_names = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
-zvariant = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
-zvariant_derive = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
-zvariant_utils = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a" }
+zbus = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
+zbus_macros = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
+zbus_names = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
+zvariant = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
+zvariant_derive = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
+zvariant_utils = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
 ```
 
 When depending directly on wgpu, cosmic-text or AccessKit types, use the same
