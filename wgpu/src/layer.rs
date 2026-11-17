@@ -1494,13 +1494,11 @@ pub(crate) fn text_glyph_reach(text: &Text) -> Rectangle {
 #[cfg(any(feature = "image", feature = "svg"))]
 pub(crate) fn image_reach(image: &Image) -> Rectangle {
     match image {
-        #[cfg(feature = "image")]
         Image::Raster {
             bounds,
             clip_bounds,
             ..
         } => bounds.intersection(clip_bounds).unwrap_or(*bounds),
-        #[cfg(feature = "svg")]
         Image::Vector {
             bounds,
             clip_bounds,
@@ -1512,7 +1510,6 @@ pub(crate) fn image_reach(image: &Image) -> Rectangle {
 #[cfg(any(feature = "image", feature = "svg"))]
 fn hash_image(state: &mut PaintHasher, image: &Image) {
     match image {
-        #[cfg(feature = "image")]
         Image::Raster {
             image,
             bounds,
@@ -1534,7 +1531,6 @@ fn hash_image(state: &mut PaintHasher, image: &Image) {
             state.rectangle(*bounds);
             state.rectangle(*clip_bounds);
         }
-        #[cfg(feature = "svg")]
         Image::Vector {
             svg,
             bounds,

@@ -250,6 +250,7 @@ impl Cache {
         matches!(self.raster.cache.get_mut(handle), Some(Memory::Error(_)))
     }
 
+    #[cfg(feature = "image")]
     pub(crate) fn raster_source(
         &mut self,
         handle: &core::image::Handle,
