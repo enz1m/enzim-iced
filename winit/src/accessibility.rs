@@ -1582,7 +1582,7 @@ mod virtual_text_route_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use accesskit::{Node, NodeId, Rect, Role, Tree, TreeId, TreeUpdate};
+    use accesskit::{Node, NodeId, Rect, Role, TreeId, TreeInfo, TreeUpdate};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn tree_with_bounds(rect: Rect) -> TreeUpdate {
@@ -1590,7 +1590,7 @@ mod tests {
         node.set_bounds(rect);
         TreeUpdate {
             nodes: vec![(NodeId(1), node)],
-            tree: Some(Tree::new(NodeId(1))),
+            tree: Some(TreeInfo::new(NodeId(1))),
             tree_id: TreeId::ROOT,
             focus: NodeId(1),
         }
@@ -1756,7 +1756,7 @@ mod tests {
                     let _ = nodes_built.fetch_add(nodes.len(), Ordering::SeqCst);
                     Some(TreeUpdate {
                         nodes,
-                        tree: Some(Tree::new(NodeId(1))),
+                        tree: Some(TreeInfo::new(NodeId(1))),
                         tree_id: TreeId::ROOT,
                         focus: NodeId(1),
                     })
@@ -1828,7 +1828,7 @@ mod tests {
             });
             Some(TreeUpdate {
                 nodes: vec![(NodeId(1), root), (NodeId(2), button)],
-                tree: Some(Tree::new(NodeId(1))),
+                tree: Some(TreeInfo::new(NodeId(1))),
                 tree_id: TreeId::ROOT,
                 focus: NodeId(2),
             })
@@ -1862,7 +1862,7 @@ mod tests {
             node.set_label("old");
             Some(TreeUpdate {
                 nodes: vec![(NodeId(1), node)],
-                tree: Some(Tree::new(NodeId(1))),
+                tree: Some(TreeInfo::new(NodeId(1))),
                 tree_id: TreeId::ROOT,
                 focus: NodeId(1),
             })
@@ -1899,7 +1899,7 @@ mod tests {
             inserted.set_label("inserted");
             Some(TreeUpdate {
                 nodes: vec![(NodeId(1), root), (NodeId(3), inserted)],
-                tree: Some(Tree::new(NodeId(1))),
+                tree: Some(TreeInfo::new(NodeId(1))),
                 tree_id: TreeId::ROOT,
                 focus: NodeId(3),
             })
