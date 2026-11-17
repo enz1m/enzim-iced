@@ -86,7 +86,10 @@ pub(crate) fn capture(
     if !matches!(receive.recv(), Ok(Ok(()))) {
         return;
     }
-    let mapped = slice.get_mapped_range();
+    let Ok(mapped) = slice.get_mapped_range() else {
+        buffer.unmap();
+        return;
+    };
     let mut pixels = Vec::with_capacity(row * size.height as usize);
     for line in mapped.chunks(padded) {
         pixels.extend_from_slice(&line[..row]);

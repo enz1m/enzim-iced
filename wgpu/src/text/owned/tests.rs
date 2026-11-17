@@ -22,6 +22,7 @@ fn engine() -> Engine {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: None,
+                apply_limit_buckets: false,
             })
             .await
             .expect("a real adapter is required for text ownership verification");

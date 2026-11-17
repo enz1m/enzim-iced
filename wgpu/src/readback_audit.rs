@@ -130,7 +130,11 @@ impl Pending {
             .try_recv()
             .expect("GPU audit map callback")
             .expect("GPU audit map");
-        let bytes = self.buffer.slice(..).get_mapped_range();
+        let bytes = self
+            .buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU audit range");
         let result = [
             u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
             u32::from_le_bytes(bytes[4..8].try_into().unwrap()),

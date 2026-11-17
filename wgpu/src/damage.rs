@@ -782,7 +782,9 @@ pub(crate) fn read_pixels(
     let slice = buffer.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     let _ = device.poll(wgpu::PollType::wait_indefinitely());
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("damage check readback range");
     mapped
         .chunks(row as usize)
         .flat_map(|line| line[..(width * 4) as usize].to_vec())

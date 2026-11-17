@@ -1051,6 +1051,7 @@ mod tests {
             power_preference: wgpu::PowerPreference::None,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .ok()?;
 
@@ -1176,7 +1177,11 @@ mod tests {
             timeout: None,
         });
 
-        let data = buffer.slice(..).get_mapped_range().to_vec();
+        let data = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("atlas readback range")
+            .to_vec();
         buffer.unmap();
 
         data

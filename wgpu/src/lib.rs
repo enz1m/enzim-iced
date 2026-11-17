@@ -3214,7 +3214,10 @@ impl Renderer {
         }
         let pixels: [Vec<u8>; COPIES] = std::array::from_fn(|index| {
             let buffer = &output_buffers[index];
-            let view = buffer.slice(..).get_mapped_range();
+            let view = buffer
+                .slice(..)
+                .get_mapped_range()
+                .expect("Screenshot range after its map callback");
             let mut pixels =
                 Vec::with_capacity(dimensions.unpadded_bytes_per_row * dimensions.height as usize);
             for row in view.chunks_exact(dimensions.padded_bytes_per_row) {

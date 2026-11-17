@@ -395,6 +395,7 @@ impl graphics::lane::Backend for LaneBackend {
                 // 101.5 ms hole in the lane's own presented-frame trace,
                 // exactly spanning the deterministic UI stall.
                 desired_maximum_frame_latency: 3,
+                color_space: wgpu::SurfaceColorSpace::Auto,
             },
         );
     }

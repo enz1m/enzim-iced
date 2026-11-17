@@ -299,7 +299,11 @@ impl State {
                 StagingPhase::Mapping(ready) => match ready.try_recv() {
                     Ok(Ok(())) => {
                         {
-                            let bytes = staging.buffer.slice(..).get_mapped_range();
+                            let bytes = staging
+                                .buffer
+                                .slice(..)
+                                .get_mapped_range()
+                                .expect("material probe range after its map callback");
                             for (index, key) in staging.keys.iter().enumerate() {
                                 let value = f32::from(bytes[index * 4]) / 255.0;
                                 let previous = self

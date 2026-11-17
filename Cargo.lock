@@ -659,9 +659,9 @@ dependencies = [
 
 [[package]]
 name = "bit-set"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34ddef2995421ab6a5c779542c81ee77c115206f4ad9d5a8e05f4ff49716a3dd"
+checksum = "09ec2f926cc3060f09db9ebc5b52823d85268d24bb917e472c0c4bea35780a7d"
 dependencies = [
  "bit-vec 0.9.1",
 ]
@@ -1265,7 +1265,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 [[package]]
 name = "cryoglyph"
 version = "0.1.0"
-source = "git+https://github.com/enz1m/enzim-cryoglyph.git?rev=eeaaa5585fbb1bac004ca398cfad957fec6be5f3#eeaaa5585fbb1bac004ca398cfad957fec6be5f3"
+source = "git+https://github.com/enz1m/enzim-cryoglyph.git?rev=0617a49e7b8a5c5c4cc572a3e98cda70ff1be89f#0617a49e7b8a5c5c4cc572a3e98cda70ff1be89f"
 dependencies = [
  "cosmic-text",
  "etagere",
@@ -1561,7 +1561,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1572,12 +1572,11 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
 name = "etagere"
-version = "0.2.15"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc89bf99e5dc15954a60f707c1e09d7540e5cd9af85fa75caa0b510bc08c5342"
+checksum = "7ecb5c40d5683a270e077688f53a99eac51c1cb1ae5ba63b55590370cb3536bf"
 dependencies = [
  "euclid",
- "svg_fmt",
 ]
 
 [[package]]
@@ -2104,27 +2103,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.19",
- "windows 0.62.2",
-]
-
-[[package]]
-name = "gpu-descriptor"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b89c83349105e3732062a895becfc71a8f921bb71ecbbdd8ff99263e3b53a0ca"
-dependencies = [
- "bitflags 2.13.1",
- "gpu-descriptor-types",
- "hashbrown 0.15.5",
-]
-
-[[package]]
-name = "gpu-descriptor-types"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
-dependencies = [
- "bitflags 2.13.1",
+ "windows 0.57.0",
 ]
 
 [[package]]
@@ -2213,6 +2192,9 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash 0.2.0",
+]
 
 [[package]]
 name = "headers"
@@ -2249,12 +2231,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
-name = "hexf-parse"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "http"
@@ -2391,7 +2367,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -2879,7 +2855,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3471,27 +3447,38 @@ checksum = "13d2233c9842d08cfe13f9eac96e207ca6a2ea10b80259ebe8ad0268be27d2af"
 
 [[package]]
 name = "naga"
-version = "29.0.4"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=7f040c8501f6838262c90ede4edfa40940fe2de8#7f040c8501f6838262c90ede4edfa40940fe2de8"
+version = "30.0.2"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
 dependencies = [
  "arrayvec",
- "bit-set 0.9.1",
+ "bit-set 0.10.0",
  "bitflags 2.13.1",
  "cfg-if",
  "cfg_aliases",
  "codespan-reporting",
  "half",
- "hashbrown 0.16.1",
- "hexf-parse",
+ "hashbrown 0.17.1",
  "indexmap",
  "libm",
  "log",
+ "naga-types",
  "num-traits",
  "once_cell",
  "rustc-hash 1.1.0",
  "spirv",
  "thiserror 2.0.19",
  "unicode-ident",
+]
+
+[[package]]
+name = "naga-types"
+version = "30.0.2"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+dependencies = [
+ "hashbrown 0.17.1",
+ "indexmap",
+ "rustc-hash 1.1.0",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -3987,6 +3974,7 @@ dependencies = [
  "bitflags 2.13.1",
  "objc2 0.6.4",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
 ]
@@ -4184,7 +4172,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5123,7 +5111,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5853,7 +5841,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6920,8 +6908,8 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "wgpu"
-version = "29.0.4"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=7f040c8501f6838262c90ede4edfa40940fe2de8#7f040c8501f6838262c90ede4edfa40940fe2de8"
+version = "30.0.2"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.1",
@@ -6929,7 +6917,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "document-features",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "js-sys",
  "log",
  "naga",
@@ -6949,20 +6937,21 @@ dependencies = [
 
 [[package]]
 name = "wgpu-core"
-version = "29.0.4"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=7f040c8501f6838262c90ede4edfa40940fe2de8#7f040c8501f6838262c90ede4edfa40940fe2de8"
+version = "30.0.2"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
 dependencies = [
  "arrayvec",
- "bit-set 0.9.1",
+ "bit-set 0.10.0",
  "bit-vec 0.9.1",
  "bitflags 2.13.1",
  "bytemuck",
  "cfg_aliases",
  "document-features",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "indexmap",
  "log",
  "naga",
+ "naga-types",
  "once_cell",
  "parking_lot",
  "portable-atomic",
@@ -6982,45 +6971,45 @@ dependencies = [
 
 [[package]]
 name = "wgpu-core-deps-apple"
-version = "29.0.4"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=7f040c8501f6838262c90ede4edfa40940fe2de8#7f040c8501f6838262c90ede4edfa40940fe2de8"
+version = "30.0.2"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
 dependencies = [
  "wgpu-hal",
 ]
 
 [[package]]
 name = "wgpu-core-deps-emscripten"
-version = "29.0.4"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=7f040c8501f6838262c90ede4edfa40940fe2de8#7f040c8501f6838262c90ede4edfa40940fe2de8"
+version = "30.0.2"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
 dependencies = [
  "wgpu-hal",
 ]
 
 [[package]]
 name = "wgpu-core-deps-wasm"
-version = "29.0.4"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=7f040c8501f6838262c90ede4edfa40940fe2de8#7f040c8501f6838262c90ede4edfa40940fe2de8"
+version = "30.0.2"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
 dependencies = [
  "wgpu-hal",
 ]
 
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
-version = "29.0.4"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=7f040c8501f6838262c90ede4edfa40940fe2de8#7f040c8501f6838262c90ede4edfa40940fe2de8"
+version = "30.0.2"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
 dependencies = [
  "wgpu-hal",
 ]
 
 [[package]]
 name = "wgpu-hal"
-version = "29.0.4"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=7f040c8501f6838262c90ede4edfa40940fe2de8#7f040c8501f6838262c90ede4edfa40940fe2de8"
+version = "30.0.2"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
 dependencies = [
  "android_system_properties",
  "arrayvec",
  "ash",
- "bit-set 0.9.1",
+ "bit-set 0.10.0",
  "bitflags 2.13.1",
  "block2 0.6.2",
  "bytemuck",
@@ -7029,17 +7018,18 @@ dependencies = [
  "glow",
  "glutin_wgl_sys",
  "gpu-allocator",
- "gpu-descriptor",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "js-sys",
  "khronos-egl",
  "libc",
  "libloading",
  "log",
  "naga",
+ "naga-types",
  "ndk-sys",
  "objc2 0.6.4",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
@@ -7054,6 +7044,7 @@ dependencies = [
  "raw-window-metal",
  "renderdoc-sys",
  "smallvec",
+ "static_assertions",
  "thiserror 2.0.19",
  "wasm-bindgen",
  "wayland-sys",
@@ -7067,8 +7058,8 @@ dependencies = [
 
 [[package]]
 name = "wgpu-naga-bridge"
-version = "29.0.4"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=7f040c8501f6838262c90ede4edfa40940fe2de8#7f040c8501f6838262c90ede4edfa40940fe2de8"
+version = "30.0.2"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
 dependencies = [
  "naga",
  "wgpu-types",
@@ -7076,14 +7067,16 @@ dependencies = [
 
 [[package]]
 name = "wgpu-types"
-version = "29.0.4"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=7f040c8501f6838262c90ede4edfa40940fe2de8#7f040c8501f6838262c90ede4edfa40940fe2de8"
+version = "30.0.2"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
 dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
  "js-sys",
  "log",
+ "naga-types",
  "raw-window-handle",
+ "static_assertions",
  "web-sys",
 ]
 
@@ -7109,7 +7102,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
