@@ -20,42 +20,42 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
 name = "accesskit"
-version = "0.24.1"
-source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=e9da4a8da1825e65356f35c94325fb9438cf90d0#e9da4a8da1825e65356f35c94325fb9438cf90d0"
+version = "0.25.2"
+source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=7da7ac7b800fabf0bd2ba62eef23fa9117a684f4#7da7ac7b800fabf0bd2ba62eef23fa9117a684f4"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
 name = "accesskit_atspi_common"
-version = "0.19.1"
-source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=e9da4a8da1825e65356f35c94325fb9438cf90d0#e9da4a8da1825e65356f35c94325fb9438cf90d0"
+version = "0.21.1"
+source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=7da7ac7b800fabf0bd2ba62eef23fa9117a684f4#7da7ac7b800fabf0bd2ba62eef23fa9117a684f4"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
  "atspi-common",
- "phf 0.13.1",
+ "phf 0.14.0",
  "serde",
  "zvariant",
 ]
 
 [[package]]
 name = "accesskit_consumer"
-version = "0.38.0"
-source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=e9da4a8da1825e65356f35c94325fb9438cf90d0#e9da4a8da1825e65356f35c94325fb9438cf90d0"
+version = "0.39.2"
+source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=7da7ac7b800fabf0bd2ba62eef23fa9117a684f4#7da7ac7b800fabf0bd2ba62eef23fa9117a684f4"
 dependencies = [
  "accesskit",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
 name = "accesskit_ios"
-version = "0.1.2"
-source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=e9da4a8da1825e65356f35c94325fb9438cf90d0#e9da4a8da1825e65356f35c94325fb9438cf90d0"
+version = "0.2.2"
+source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=7da7ac7b800fabf0bd2ba62eef23fa9117a684f4#7da7ac7b800fabf0bd2ba62eef23fa9117a684f4"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit 0.2.2",
@@ -63,12 +63,12 @@ dependencies = [
 
 [[package]]
 name = "accesskit_macos"
-version = "0.26.3"
-source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=e9da4a8da1825e65356f35c94325fb9438cf90d0#e9da4a8da1825e65356f35c94325fb9438cf90d0"
+version = "0.27.2"
+source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=7da7ac7b800fabf0bd2ba62eef23fa9117a684f4#7da7ac7b800fabf0bd2ba62eef23fa9117a684f4"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
@@ -76,8 +76,8 @@ dependencies = [
 
 [[package]]
 name = "accesskit_unix"
-version = "0.22.1"
-source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=e9da4a8da1825e65356f35c94325fb9438cf90d0#e9da4a8da1825e65356f35c94325fb9438cf90d0"
+version = "0.24.1"
+source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=7da7ac7b800fabf0bd2ba62eef23fa9117a684f4#7da7ac7b800fabf0bd2ba62eef23fa9117a684f4"
 dependencies = [
  "accesskit",
  "accesskit_atspi_common",
@@ -91,12 +91,12 @@ dependencies = [
 
 [[package]]
 name = "accesskit_windows"
-version = "0.34.0"
-source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=e9da4a8da1825e65356f35c94325fb9438cf90d0#e9da4a8da1825e65356f35c94325fb9438cf90d0"
+version = "0.35.2"
+source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=7da7ac7b800fabf0bd2ba62eef23fa9117a684f4#7da7ac7b800fabf0bd2ba62eef23fa9117a684f4"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "static_assertions",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -104,8 +104,8 @@ dependencies = [
 
 [[package]]
 name = "accesskit_winit"
-version = "0.33.2"
-source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=e9da4a8da1825e65356f35c94325fb9438cf90d0#e9da4a8da1825e65356f35c94325fb9438cf90d0"
+version = "0.34.2"
+source = "git+https://github.com/enz1m/enzim-accesskit.git?rev=7da7ac7b800fabf0bd2ba62eef23fa9117a684f4#7da7ac7b800fabf0bd2ba62eef23fa9117a684f4"
 dependencies = [
  "accesskit",
  "accesskit_ios",
@@ -1399,7 +1399,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1558,7 +1558,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2076,7 +2076,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.19",
- "windows 0.62.2",
+ "windows 0.57.0",
 ]
 
 [[package]]
@@ -2340,7 +2340,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -2827,7 +2827,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3527,7 +3527,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4126,7 +4126,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4239,12 +4239,12 @@ dependencies = [
 
 [[package]]
 name = "phf"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
+checksum = "010378780309880b08997fae13be7834dba947d36393bd372f2b1556deb2a2f6"
 dependencies = [
- "phf_macros 0.13.1",
- "phf_shared 0.13.1",
+ "phf_macros 0.14.0",
+ "phf_shared 0.14.0",
  "serde",
 ]
 
@@ -4260,12 +4260,12 @@ dependencies = [
 
 [[package]]
 name = "phf_generator"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "135ace3a761e564ec88c03a77317a7c6b80bb7f7135ef2544dbe054243b89737"
+checksum = "aeb62e0959d5a1bebc965f4d15d9e2b7cea002b6b0f5ba8cde6cc26738467100"
 dependencies = [
  "fastrand",
- "phf_shared 0.13.1",
+ "phf_shared 0.14.0",
 ]
 
 [[package]]
@@ -4283,12 +4283,12 @@ dependencies = [
 
 [[package]]
 name = "phf_macros"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "812f032b54b1e759ccd5f8b6677695d5268c588701effba24601f6932f8269ef"
+checksum = "5fa8d0ca26d424d27630da600c6624696e7dec8bf7b3b492b383c5dc49e5e085"
 dependencies = [
- "phf_generator 0.13.1",
- "phf_shared 0.13.1",
+ "phf_generator 0.14.0",
+ "phf_shared 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4305,9 +4305,9 @@ dependencies = [
 
 [[package]]
 name = "phf_shared"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
+checksum = "c6fd9027e2d9319be6349febd1db4e8d02aa544921200c9b777720ac34a3aa89"
 dependencies = [
  "siphasher",
 ]
@@ -5056,7 +5056,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5484,7 +5484,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5768,7 +5768,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5959,9 +5959,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "bytes",
  "libc",
@@ -6258,7 +6258,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6983,7 +6983,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7521,8 +7521,8 @@ dependencies = [
 
 [[package]]
 name = "zbus"
-version = "5.18.0"
-source = "git+https://github.com/enz1m/enzim-zbus.git?rev=815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a#815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a"
+version = "5.19.0"
+source = "git+https://github.com/enz1m/enzim-zbus.git?rev=e182645b56d15e637bb6c8144f99ebfa7f900716#e182645b56d15e637bb6c8144f99ebfa7f900716"
 dependencies = [
  "async-broadcast",
  "async-executor",
@@ -7580,13 +7580,13 @@ dependencies = [
 
 [[package]]
 name = "zbus_macros"
-version = "5.18.0"
-source = "git+https://github.com/enz1m/enzim-zbus.git?rev=815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a#815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a"
+version = "5.19.0"
+source = "git+https://github.com/enz1m/enzim-zbus.git?rev=e182645b56d15e637bb6c8144f99ebfa7f900716#e182645b56d15e637bb6c8144f99ebfa7f900716"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
  "zbus_names",
  "zvariant",
  "zvariant_utils",
@@ -7594,8 +7594,8 @@ dependencies = [
 
 [[package]]
 name = "zbus_names"
-version = "4.3.4"
-source = "git+https://github.com/enz1m/enzim-zbus.git?rev=815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a#815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a"
+version = "4.3.5"
+source = "git+https://github.com/enz1m/enzim-zbus.git?rev=e182645b56d15e637bb6c8144f99ebfa7f900716#e182645b56d15e637bb6c8144f99ebfa7f900716"
 dependencies = [
  "serde",
  "winnow",
@@ -7612,6 +7612,15 @@ dependencies = [
  "winnow",
  "zbus_names",
  "zvariant",
+]
+
+[[package]]
+name = "zcheapstr"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "939f186d9ecebe044315a5cb6d6f78568bbc21152adc954d5a0c2f58bdbc9920"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -7732,38 +7741,39 @@ dependencies = [
 
 [[package]]
 name = "zvariant"
-version = "5.13.1"
-source = "git+https://github.com/enz1m/enzim-zbus.git?rev=815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a#815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a"
+version = "5.15.1"
+source = "git+https://github.com/enz1m/enzim-zbus.git?rev=e182645b56d15e637bb6c8144f99ebfa7f900716#e182645b56d15e637bb6c8144f99ebfa7f900716"
 dependencies = [
  "endi",
  "enumflags2",
  "serde",
  "url",
  "winnow",
+ "zcheapstr",
  "zvariant_derive",
  "zvariant_utils",
 ]
 
 [[package]]
 name = "zvariant_derive"
-version = "5.13.1"
-source = "git+https://github.com/enz1m/enzim-zbus.git?rev=815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a#815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a"
+version = "5.15.1"
+source = "git+https://github.com/enz1m/enzim-zbus.git?rev=e182645b56d15e637bb6c8144f99ebfa7f900716#e182645b56d15e637bb6c8144f99ebfa7f900716"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
  "zvariant_utils",
 ]
 
 [[package]]
 name = "zvariant_utils"
-version = "3.5.0"
-source = "git+https://github.com/enz1m/enzim-zbus.git?rev=815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a#815a9ca7b64aa24e14ccb6ea3f7eda97ef7bbc8a"
+version = "4.2.0"
+source = "git+https://github.com/enz1m/enzim-zbus.git?rev=e182645b56d15e637bb6c8144f99ebfa7f900716#e182645b56d15e637bb6c8144f99ebfa7f900716"
 dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "syn 2.0.119",
+ "syn 3.0.3",
  "winnow",
 ]
