@@ -27,7 +27,15 @@ fn layer() -> Layer {
 }
 
 fn images(layer: &mut Layer) -> Vec<Image> {
-    layer.images.iter_mut().map(|image| image.clone()).collect()
+    #[cfg(any(feature = "image", feature = "svg"))]
+    {
+        layer.images.iter_mut().map(|image| image.clone()).collect()
+    }
+    #[cfg(not(any(feature = "image", feature = "svg")))]
+    {
+        let _ = layer;
+        Vec::new()
+    }
 }
 
 #[test]

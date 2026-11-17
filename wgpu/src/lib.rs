@@ -5430,6 +5430,7 @@ impl core::Renderer for Renderer {
         };
         #[cfg(any(feature = "image", feature = "svg"))]
         let media_scale = self.scale.map_or(1.0, core::renderer::Scale::total);
+        #[cfg(any(feature = "image", feature = "svg"))]
         let media_assets = match owned_media::Assets::capture(
             &mut self.image_cache.borrow_mut(),
             &mut recording.segments,

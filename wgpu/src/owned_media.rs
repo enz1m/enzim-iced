@@ -36,11 +36,7 @@ impl Assets {
         for layer in segments.iter_mut().flat_map(|segment| &mut segment.layers) {
             layer.images.retain(|image| match image {
                 graphics::Image::Raster { image, .. } => !cache.raster_shows_nothing(&image.handle),
-                #[allow(
-                    unreachable_patterns,
-                    reason = "vectors exist only with the svg feature"
-                )]
-                _ => true,
+                graphics::Image::Vector { .. } => true,
             });
         }
         let mut vector_work = 0usize;
