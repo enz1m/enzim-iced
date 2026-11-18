@@ -92,3 +92,5 @@ it requires a coordinated migration of the framework's widget conversions.
 
 GPU suballocation pools use 4 MiB blocks to limit unused capacity.
 Unused alpha-target levels age out after ten seconds when rendering resumes.
+Animation lanes release cached frame targets after ten idle seconds and
+recreate them with a full repaint on their next start.

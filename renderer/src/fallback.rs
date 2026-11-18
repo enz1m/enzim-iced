@@ -746,6 +746,13 @@ where
         }
     }
 
+    fn release_frame_targets(&mut self) {
+        match self {
+            Self::Primary(backend) => backend.release_frame_targets(),
+            Self::Secondary(backend) => backend.release_frame_targets(),
+        }
+    }
+
     fn layout_sample(
         &mut self,
     ) -> Result<

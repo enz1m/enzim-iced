@@ -34,6 +34,12 @@ const RECLAIM_TIMEOUT: time::Duration = time::Duration::from_secs(2);
 /// record is the documented eviction.
 const TRACE_CAPACITY: usize = 4096;
 
+const FRAME_TARGET_RETENTION: time::Duration = if cfg!(test) {
+    time::Duration::from_millis(200)
+} else {
+    time::Duration::from_secs(10)
+};
+
 /// The backend half of a lane: the operations the worker performs on the
 /// surface and renderer it owns.
 ///
@@ -77,6 +83,10 @@ pub trait Backend: Send + 'static {
 
     /// Releases scene-derived backend resources after their owner retires.
     fn retire_resources(&mut self) {}
+
+    /// Releases cached frame targets after the lane has been idle.
+    /// The next start must recreate them and repaint in full.
+    fn release_frame_targets(&mut self) {}
 
     /// The specific owned-program refusal behind a failed replay, when available.
     fn replay_refusal(&self) -> Option<crate::core::renderer::presentation::Error> {
@@ -177,6 +187,10 @@ impl<S: Send + 'static> Backend for Box<dyn Backend<Surface = S>> {
 
     fn retire_resources(&mut self) {
         (**self).retire_resources();
+    }
+
+    fn release_frame_targets(&mut self) {
+        (**self).release_frame_targets();
     }
 
     fn replay_refusal(&self) -> Option<crate::core::renderer::presentation::Error> {
@@ -943,9 +957,16 @@ fn spawn_reserved<B: Backend>(backend: B, permit: admission::Permit) -> Lane<B::
                 repainting: false,
             };
 
+            let mut release_due: Option<time::Instant> = None;
+
             'idle: loop {
-                // Idle: the lane owns no surface, so it blocks. It costs a
-                // parked thread and nothing else.
+                // Cached targets survive brief pauses between animations.
+                if let Some(due) = release_due
+                    && (!requests.wait_until(due) || time::Instant::now() >= due)
+                {
+                    backend.release_frame_targets();
+                    release_due = None;
+                }
                 let mut surface = match requests.recv() {
                     Ok(Request::Start {
                         surface,
@@ -1591,6 +1612,7 @@ fn spawn_reserved<B: Backend>(backend: B, permit: admission::Permit) -> Lane<B::
                 if shutting_down {
                     return;
                 }
+                release_due = Some(time::Instant::now() + FRAME_TARGET_RETENTION);
             }
         })
         .expect("spawn the iced animation lane");

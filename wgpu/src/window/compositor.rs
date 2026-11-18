@@ -432,6 +432,12 @@ impl graphics::lane::Backend for LaneBackend {
         self.stages = None;
     }
 
+    fn release_frame_targets(&mut self) {
+        self.renderer.release_frame_targets();
+        // Reclaim completed allocations even when no further frames arrive.
+        let _ = self.device.poll(wgpu::PollType::Poll);
+    }
+
     fn layout_sample(
         &mut self,
     ) -> Result<

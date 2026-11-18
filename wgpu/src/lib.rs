@@ -2655,6 +2655,13 @@ impl Renderer {
         false
     }
 
+    /// Releases the cached canvas and alpha targets.
+    /// The next frame recreates them and repaints in full.
+    pub fn release_frame_targets(&mut self) {
+        self.canvas = None;
+        self.alpha.release_targets();
+    }
+
     /// Forgets the canvas and any damage measured ahead of a present that did
     /// not happen, so the next present paints in full: the damage tracker
     /// already counts the frame the canvas never received.

@@ -132,6 +132,79 @@ fn occluded_surface_returns_once_instead_of_polling() {
     assert!(!lane.is_poisoned());
 }
 
+struct Releasing(mpsc::Sender<time::Instant>);
+
+impl Backend for Releasing {
+    type Surface = u64;
+    fn configure(&mut self, _: &mut u64, _: u32, _: u32) {}
+    fn replay(&mut self, _: &Viewport, _: &Recording, _: &[Track]) -> bool {
+        true
+    }
+    fn present(
+        &mut self,
+        _: &mut u64,
+        _: &Viewport,
+        _: Color,
+        _: &mut dyn FnMut(),
+    ) -> Result<(), SurfaceError> {
+        Err(SurfaceError::Occluded)
+    }
+    fn release_frame_targets(&mut self) {
+        let _ = self.0.send(time::Instant::now());
+    }
+    fn presentation_quality(&self) -> PresentationQuality {
+        PresentationQuality::Submitted
+    }
+}
+
+#[test]
+fn idle_lane_releases_frame_targets_once_after_the_retention_time() {
+    let (released, releases) = mpsc::channel();
+    let mut lane =
+        spawn(Releasing(released)).unwrap_or_else(|_| panic!("backend admission unavailable"));
+    let (wake, woke) = mpsc::channel();
+    lane.on_stop(move || {
+        let _ = wake.send(time::Instant::now());
+    });
+
+    assert!(releases.recv_timeout(FRAME_TARGET_RETENTION * 2).is_err());
+
+    lane.commit(
+        Recording::new(()),
+        1,
+        viewport(),
+        Color::BLACK,
+        vec![],
+        vec![animation(1, None)],
+        None,
+        false,
+        false,
+    );
+    assert!(lane.start(71, viewport(), Color::BLACK).is_none());
+    let stopped = woke
+        .recv_timeout(time::Duration::from_secs(2))
+        .expect("the occluded lane stops");
+    let released = releases
+        .recv_timeout(time::Duration::from_secs(2))
+        .expect("the idle lane releases its frame targets");
+    assert!(released.duration_since(stopped) >= FRAME_TARGET_RETENTION);
+
+    lane.commit(
+        Recording::new(()),
+        2,
+        viewport(),
+        Color::BLACK,
+        vec![],
+        vec![],
+        None,
+        false,
+        false,
+    );
+    assert!(releases.recv_timeout(FRAME_TARGET_RETENTION * 2).is_err());
+    let (surface, _) = lane.reclaim().expect("surface must be returned");
+    assert_eq!(surface, 71);
+}
+
 #[test]
 fn scene_reclamation_lane_retire_drops_installed_recording_before_shutdown() {
     let attempts = Arc::new(AtomicUsize::new(0));

@@ -75,6 +75,14 @@ fn alpha_clear_folds_into_sibling_paint_and_reused_targets_stay_empty() {
         assert_eq!(statistics.clear_passes, 0);
         assert_eq!(statistics.target_allocations, 1);
     }
+    let before = screenshot(&mut renderer);
+    let allocations = renderer.alpha_group_statistics().target_allocations;
+    renderer.release_frame_targets();
+    assert_eq!(screenshot(&mut renderer), before);
+    assert_eq!(
+        renderer.alpha_group_statistics().target_allocations,
+        allocations + 1
+    );
 }
 
 #[test]

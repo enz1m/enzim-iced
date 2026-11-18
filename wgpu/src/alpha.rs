@@ -330,6 +330,12 @@ impl State {
             self.targets.len() as u64 * u64::from(size.width) * u64::from(size.height) * 4;
     }
 
+    pub fn release_targets(&mut self) {
+        self.targets.clear();
+        self.statistics.retained_targets = 0;
+        self.statistics.retained_bytes = 0;
+    }
+
     pub fn target(&self, depth: usize) -> wgpu::TextureView {
         self.targets[depth].view.clone()
     }
