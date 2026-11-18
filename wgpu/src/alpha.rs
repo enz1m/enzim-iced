@@ -1,6 +1,7 @@
 // Modified by enzUI contributors. See FORK.md.
 //! Full-frame render-target pooling and compositing for subtree alpha groups.
 
+use crate::core::time::{Duration, Instant};
 use crate::core::{Point, Size};
 
 use std::num::NonZeroU64;
@@ -26,6 +27,22 @@ pub struct Statistics {
     pub retained_targets: usize,
     /// Logical RGBA8 bytes retained by the target pool.
     pub retained_bytes: u64,
+}
+
+const TARGET_RETENTION: Duration = Duration::from_secs(10);
+
+fn retained_len(
+    reached: impl DoubleEndedIterator<Item = Instant> + ExactSizeIterator,
+    depth: usize,
+    now: Instant,
+) -> usize {
+    let pooled = reached.len();
+    let stale = reached
+        .rev()
+        .take(pooled.saturating_sub(depth))
+        .take_while(|reached| now.duration_since(*reached) >= TARGET_RETENTION)
+        .count();
+    pooled - stale
 }
 
 /// Bytes of the mask uniform block.
@@ -63,6 +80,7 @@ pub(crate) struct State {
 }
 
 struct Target {
+    reached: Instant,
     _texture: wgpu::Texture,
     view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
@@ -276,6 +294,7 @@ impl State {
             self.size = size;
         }
 
+        let now = Instant::now();
         while self.targets.len() < max_depth {
             self.targets.push(Target::new(
                 device,
@@ -285,9 +304,19 @@ impl State {
                 size,
                 self.format,
                 self.targets.len(),
+                now,
             ));
             self.statistics.target_allocations += 1;
         }
+        for target in &mut self.targets[..max_depth] {
+            target.reached = now;
+        }
+        let retained = retained_len(
+            self.targets.iter().map(|target| target.reached),
+            max_depth,
+            now,
+        );
+        self.targets.truncate(retained);
 
         self.uniform_cursor = 0;
         self.statistics.groups = 0;
@@ -619,6 +648,7 @@ impl Target {
         size: Size<u32>,
         format: wgpu::TextureFormat,
         depth: usize,
+        reached: Instant,
     ) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("iced_wgpu alpha target"),
@@ -666,6 +696,7 @@ impl Target {
         });
 
         Self {
+            reached,
             _texture: texture,
             view,
             bind_group,
@@ -692,5 +723,29 @@ impl Uniform {
         });
 
         Self { buffer, bind_group }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_pool_drops_levels_no_frame_reached_for_the_retention_time() {
+        let now = Instant::now() + Duration::from_secs(3600);
+        let stale = TARGET_RETENTION.as_secs();
+        let fresh = stale - 1;
+        let cases: &[(&[u64], usize, usize)] = &[
+            (&[stale, stale], 2, 2),
+            (&[0, fresh, fresh], 1, 3),
+            (&[0, stale, stale], 1, 1),
+            (&[stale, stale], 0, 0),
+            (&[0, stale, fresh], 1, 3),
+            (&[stale], 3, 1),
+        ];
+        for &(ages, depth, expected) in cases {
+            let reached = ages.iter().map(|age| now - Duration::from_secs(*age));
+            assert_eq!(retained_len(reached, depth, now), expected);
+        }
     }
 }

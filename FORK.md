@@ -91,3 +91,4 @@ it requires a coordinated migration of the framework's widget conversions.
 ## Graphics memory retention
 
 GPU suballocation pools use 4 MiB blocks to limit unused capacity.
+Unused alpha-target levels age out after ten seconds when rendering resumes.
