@@ -167,7 +167,11 @@ impl Compositor {
                     label: Some("iced_wgpu::window::compositor device descriptor"),
                     required_features,
                     required_limits: required_limits.clone(),
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
+                    // Bound pool slack; larger textures use dedicated allocations.
+                    memory_hints: wgpu::MemoryHints::Manual {
+                        suballocated_device_memory_block_size: SUBALLOCATED_BLOCK_BYTES
+                            ..SUBALLOCATED_BLOCK_BYTES,
+                    },
                     trace: wgpu::Trace::Off,
                     experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 },
@@ -208,6 +212,8 @@ impl Compositor {
         Err(Error::RequestDeviceFailed(errors))
     }
 }
+
+const SUBALLOCATED_BLOCK_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Loses the device after `ICED_DEBUG_DEVICE_LOSS_AFTER_MS` milliseconds,
 /// when set, so recovery from a lost device can be exercised in a running

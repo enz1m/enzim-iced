@@ -87,3 +87,7 @@ dependencies, split Wayland backend features, AccessKit 0.25 and zbus 5.19.
 Selected upstream fixes retain their original authors and source commit IDs.
 The generic-widget, selection and popover redesign remains deferred because
 it requires a coordinated migration of the framework's widget conversions.
+
+## Graphics memory retention
+
+GPU suballocation pools use 4 MiB blocks to limit unused capacity.
