@@ -109,6 +109,9 @@ impl Cache {
         backend: wgpu::Backend,
         layout: wgpu::BindGroupLayout,
         _shell: &Shell,
+        #[cfg(all(feature = "image", not(target_arch = "wasm32")))] upload_gate: std::sync::Arc<
+            std::sync::Mutex<()>,
+        >,
     ) -> Self {
         #[cfg(feature = "image")]
         let raster_cache = crate::image::raster::Cache::default();
@@ -120,6 +123,7 @@ impl Cache {
             layout.clone(),
             _shell,
             raster_cache.source_budget(),
+            upload_gate,
         )
         .map_err(|error| {
             log::error!("failed to spawn image worker: {error}");
@@ -926,6 +930,7 @@ mod worker {
             texture_layout: wgpu::BindGroupLayout,
             shell: &Shell,
             source_budget: raster::source::Budget,
+            upload_gate: Arc<Mutex<()>>,
         ) -> io::Result<Self> {
             let (jobs_sender, jobs_receiver) = mpsc::sync_channel(MAX_PENDING_JOBS);
             let (notification_sender, notification_receiver) =
@@ -938,6 +943,7 @@ mod worker {
             let instance = Instance {
                 device: device.clone(),
                 queue: queue.clone(),
+                upload_gate,
                 backend,
                 texture_layout,
                 shell: shell.clone(),
@@ -1079,6 +1085,7 @@ mod worker {
         source_budget: raster::source::Budget,
         device: wgpu::Device,
         queue: wgpu::Queue,
+        upload_gate: Arc<Mutex<()>>,
         backend: wgpu::Backend,
         texture_layout: wgpu::BindGroupLayout,
         shell: Shell,
@@ -1223,7 +1230,14 @@ mod worker {
             let shell = self.shell.clone();
 
             self.belt.finish();
-            let submission = self.queue.submit([encoder.finish()]);
+            let commands = encoder.finish();
+            let submission = {
+                let _upload = self
+                    .upload_gate
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                self.queue.submit([commands])
+            };
             self.belt.recall();
 
             let bind_group = atlas.bind_group().clone();

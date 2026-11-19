@@ -899,6 +899,14 @@ impl graphics::Compositor for Compositor {
         if self.engine.device_lost() {
             return;
         }
+        // wgpu requires an idle queue through surface configuration.
+        #[cfg(all(feature = "image", not(target_arch = "wasm32")))]
+        let _pause_uploads = self
+            .engine
+            .image_pipeline
+            .upload_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         surface.configure(
             &self.engine.device,
             &wgpu::SurfaceConfiguration {
