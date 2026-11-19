@@ -8,6 +8,21 @@ use crate::graphics::compositor;
 use crate::graphics::{self, Antialiasing, Shell, Viewport};
 use crate::{Engine, Renderer};
 
+/// How often a resize retries a configuration that lost the queue-drain
+/// race to a background upload.
+const CONFIGURE_ATTEMPTS: u32 = 16;
+
+/// The output of a future that is ready at once, as wgpu's native error
+/// scopes are; `None` if it is still pending.
+fn ready<F: std::future::Future>(future: F) -> Option<F::Output> {
+    let mut future = std::pin::pin!(future);
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match future.as_mut().poll(&mut context) {
+        std::task::Poll::Ready(output) => Some(output),
+        std::task::Poll::Pending => None,
+    }
+}
+
 /// A window graphics backend for iced powered by `wgpu`.
 pub struct Compositor {
     instance: wgpu::Instance,
@@ -899,25 +914,41 @@ impl graphics::Compositor for Compositor {
         if self.engine.device_lost() {
             return;
         }
-        surface.configure(
-            &self.engine.device,
-            &wgpu::SurfaceConfiguration {
-                usage: surface_usage(surface, &self.adapter),
-                format: self.format,
-                present_mode: surface_present_mode(
-                    self.settings.present_mode,
-                    self.wayland,
-                    surface,
-                    &self.adapter,
-                ),
-                width,
-                height,
-                alpha_mode: self.alpha_mode,
-                view_formats: vec![],
-                desired_maximum_frame_latency: 1,
-                color_space: wgpu::SurfaceColorSpace::Auto,
-            },
-        );
+        let configuration = wgpu::SurfaceConfiguration {
+            usage: surface_usage(surface, &self.adapter),
+            format: self.format,
+            present_mode: surface_present_mode(
+                self.settings.present_mode,
+                self.wayland,
+                surface,
+                &self.adapter,
+            ),
+            width,
+            height,
+            alpha_mode: self.alpha_mode,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 1,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        // Configuring waits for the queue to drain, and fails when another
+        // thread submits meanwhile: the image worker uploads a video frame
+        // in the background on every frame, so resizing during playback
+        // could lose that race and the default error handler aborted. The
+        // failed attempt leaves the previous configuration in place, so it
+        // is tried again; the worker submits at most once per frame.
+        for attempt in 1..=CONFIGURE_ATTEMPTS {
+            let scope = self
+                .engine
+                .device
+                .push_error_scope(wgpu::ErrorFilter::Validation);
+            surface.configure(&self.engine.device, &configuration);
+            let Some(error) = ready(scope.pop()).flatten() else {
+                return;
+            };
+            if attempt == CONFIGURE_ATTEMPTS {
+                log::warn!("surface configuration failed after {attempt} attempts: {error}");
+            }
+        }
     }
 
     fn information(&self) -> compositor::Information {
