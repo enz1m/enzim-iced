@@ -772,7 +772,8 @@ where
         let lane_cost = self
             .is_lane_running()
             .then_some(self.ui_commit_cost.unwrap_or_default());
-        let at = ui_frame_target(&mut self.ui_pacer, wake, grid, lane_cost, self.ui_frame_at);
+        let latest = layout_floor(self.ui_frame_at, self.lane.as_ref());
+        let at = ui_frame_target(&mut self.ui_pacer, wake, grid, lane_cost, latest);
         self.ui_sample = Some(at);
         self.ui_frame_at = Some(at);
         self.ui_wake = Some(wake);
@@ -1115,6 +1116,51 @@ where
                 true
             }
             None => false,
+        }
+    }
+
+    pub fn admit_committed_motion(
+        &mut self,
+        compositor: &C,
+        requires_layout_ownership: bool,
+        tracks: &[core::renderer::Track],
+        animations: &[core::renderer::TrackAnimation],
+        rebase: impl FnOnce(
+            &P::Renderer,
+            &[core::renderer::TrackAnimation],
+            core::time::Duration,
+        ) -> bool,
+    ) -> bool {
+        let now = Instant::now();
+        let lane_running = self.is_lane_running();
+        let admission = crate::layout_ownership::admission(
+            requires_layout_ownership,
+            animations,
+            crate::layout_ownership::Committed {
+                scene: self.replayable_scene(self.state.logical_size()),
+                lane_available: self.has_lane(),
+                lane_running,
+                shown_by_ui: self.shows_ui_present
+                    && !self
+                        .lane
+                        .as_ref()
+                        .is_some_and(crate::graphics::lane::Lane::holds_surface),
+            },
+            now,
+        );
+        match admission {
+            crate::layout_ownership::Admission::Animate => {
+                self.animate_lane(tracks.to_vec(), animations.to_vec());
+                true
+            }
+            crate::layout_ownership::Admission::HandOver => self.hand_over_to_lane(
+                compositor,
+                tracks.to_vec(),
+                animations.to_vec(),
+                now,
+                rebase,
+            ),
+            crate::layout_ownership::Admission::Refuse => false,
         }
     }
 
@@ -1827,6 +1873,17 @@ fn ui_frame_target(
     latest.map_or(at, |latest| at.max(latest))
 }
 
+// The lane's last frame can be sampled ahead of the UI clock.
+fn layout_floor<S>(
+    ui_frame_at: Option<Instant>,
+    lane: Option<&crate::graphics::lane::Lane<S>>,
+) -> Option<Instant> {
+    let committed = lane
+        .filter(|lane| !lane.is_running())
+        .and_then(crate::graphics::lane::Lane::last_presented_at);
+    ui_frame_at.max(committed)
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -1863,6 +1920,113 @@ mod tests {
             wake,
             "no grid, no lane: the wake"
         );
+    }
+
+    #[test]
+    fn a_ui_frame_after_a_settled_lane_is_not_laid_out_before_its_last_frame() {
+        use crate::core::renderer::{NodeId, Recording, Track, TrackAnimation};
+        use crate::graphics::Viewport;
+        use crate::graphics::compositor::{PresentationQuality, SurfaceError};
+        use crate::graphics::lane::{Backend, PendingSubmission, PresentationObserver};
+        use crate::graphics::presentation::{FramePacer, PresentationGrid};
+        use std::time::Duration;
+
+        struct Immediate;
+        impl Backend for Immediate {
+            type Surface = u64;
+            fn configure(&mut self, _: &mut u64, _: u32, _: u32) {}
+            fn replay(&mut self, _: &Viewport, _: &Recording, _: &[Track]) -> bool {
+                true
+            }
+            fn present(
+                &mut self,
+                _: &mut u64,
+                _: &Viewport,
+                _: Color,
+                before: &mut dyn FnMut(),
+            ) -> Result<(), SurfaceError> {
+                before();
+                Ok(())
+            }
+            fn presentation_quality(&self) -> PresentationQuality {
+                PresentationQuality::Submitted
+            }
+        }
+
+        struct Grid(PresentationGrid);
+        impl PresentationObserver for Grid {
+            fn pre_commit(
+                &self,
+                _: PendingSubmission<'_>,
+            ) -> Option<crate::graphics::presentation::FrameKey> {
+                None
+            }
+            fn needs_track_generations(&self) -> bool {
+                false
+            }
+            fn presentation_grid(&self) -> Option<PresentationGrid> {
+                Some(self.0)
+            }
+        }
+
+        let period = Duration::from_millis(20);
+        let woke = Instant::now();
+        // The lane samples one vblank after the UI target.
+        let grid = PresentationGrid::new(woke + period / 2, period).unwrap();
+        let travel = TrackAnimation {
+            node: NodeId(1),
+            generation: 1,
+            start: woke,
+            duration: period + period / 4,
+            keyframes: vec![
+                (0.0, Track::identity(NodeId(1))),
+                (
+                    1.0,
+                    Track {
+                        translation: Vector::new(100.0, 0.0),
+                        ..Track::identity(NodeId(1))
+                    },
+                ),
+            ],
+        };
+        let viewport =
+            Viewport::with_physical_size(Size::new(320, 200), renderer::Scale::default());
+        let mut lane = crate::graphics::lane::spawn(Immediate)
+            .unwrap_or_else(|_| panic!("backend admission unavailable"));
+        lane.observe_presentation(Arc::new(Grid(grid)));
+        let (stopped, stop) = std::sync::mpsc::channel();
+        lane.on_stop(move || {
+            let _ = stopped.send(());
+        });
+        lane.commit(
+            Recording::new(()),
+            1,
+            viewport.clone(),
+            Color::BLACK,
+            vec![],
+            vec![travel.clone()],
+            None,
+            false,
+            false,
+        );
+        assert!(lane.start(7, viewport, Color::BLACK).is_none());
+        stop.recv_timeout(Duration::from_secs(2))
+            .expect("the lane settles");
+        assert!(!lane.is_running());
+
+        let next = ui_frame_target(
+            &mut FramePacer::new(),
+            woke,
+            Some(grid),
+            None,
+            layout_floor(None, Some(&lane)),
+        );
+        assert!(
+            travel.is_finished(next),
+            "laid out {:?} before the end of the travel the lane settled",
+            travel.start + travel.duration - next
+        );
+        let _ = lane.reclaim();
     }
 
     #[test]

@@ -81,6 +81,49 @@ pub(crate) fn present_or_handover<C, E>(
     Ok(PresentationOwner::Ui)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Admission {
+    Animate,
+    HandOver,
+    Refuse,
+}
+
+pub(crate) struct Committed<'a> {
+    pub scene: Option<&'a crate::core::renderer::Recording>,
+    pub lane_available: bool,
+    pub lane_running: bool,
+    pub shown_by_ui: bool,
+}
+
+pub(crate) fn admission(
+    requires_layout_ownership: bool,
+    animations: &[crate::core::renderer::TrackAnimation],
+    committed: Committed<'_>,
+    now: crate::core::time::Instant,
+) -> Admission {
+    let Some(scene) = committed.scene else {
+        return Admission::Refuse;
+    };
+    if !eligible(scene, requires_layout_ownership)
+        || !animations
+            .iter()
+            .any(|animation| animation.is_usable() && !animation.is_finished(now))
+    {
+        return Admission::Refuse;
+    }
+    if committed.lane_running {
+        return Admission::Animate;
+    }
+    // Transform-only motion requires a scene the UI has presented.
+    let owned =
+        scene.presentation().is_some() && scene.docked_tenure().is_some_and(Tenure::is_current);
+    if committed.lane_available && (owned || committed.shown_by_ui) {
+        Admission::HandOver
+    } else {
+        Admission::Refuse
+    }
+}
+
 pub(crate) fn frame_program(
     running: bool,
     recording: Option<&crate::core::renderer::Recording>,
@@ -429,6 +472,182 @@ mod tests {
             42
         );
     }
+    struct Toggle {
+        repaints: bool,
+    }
+
+    impl crate::core::Widget<(), (), ()> for Toggle {
+        fn size(&self) -> crate::core::Size<crate::core::Length> {
+            crate::core::Size::new(crate::core::Length::Fill, crate::core::Length::Fill)
+        }
+        fn layout(
+            &mut self,
+            tree: &mut crate::core::widget::Tree,
+            _: &(),
+            limits: &crate::core::layout::Limits,
+        ) {
+            crate::core::layout::Node::new(limits.max()).apply(tree);
+        }
+        fn draw(
+            &self,
+            _: &crate::core::widget::Tree,
+            _: &mut (),
+            _: &(),
+            _: &crate::core::renderer::Style,
+            _: crate::core::Layout,
+            _: crate::core::mouse::Cursor,
+            _: &crate::core::Rectangle,
+        ) {
+        }
+        fn update(
+            &mut self,
+            _: &mut crate::core::widget::Tree,
+            event: &crate::core::Event,
+            _: crate::core::Layout,
+            _: crate::core::mouse::Cursor,
+            _: &(),
+            shell: &mut Shell<'_, ()>,
+            _: &crate::core::Rectangle,
+        ) {
+            if !matches!(
+                event,
+                crate::core::Event::Mouse(crate::core::mouse::Event::ButtonPressed(_))
+            ) {
+                return;
+            }
+            let animation = proposed_animation(1);
+            shell.publish(());
+            shell.publish_track(animation.keyframes[0].1);
+            shell.publish_track_animation(animation);
+            if self.repaints {
+                shell.request_redraw();
+            } else {
+                shell.request_track_frame();
+            }
+        }
+    }
+
+    fn pressed(repaints: bool, drawn: bool) -> crate::runtime::user_interface::State {
+        use crate::runtime::user_interface::{Cache, UserInterface};
+        let mut renderer = ();
+        let mut ui = UserInterface::build(
+            crate::core::Element::new(Toggle { repaints }),
+            crate::core::Size::new(100.0, 100.0),
+            Cache::new(),
+            &mut renderer,
+        );
+        if drawn {
+            ui.draw(
+                &mut renderer,
+                &(),
+                &crate::core::renderer::Style::default(),
+                crate::core::mouse::Cursor::Unavailable,
+            );
+        }
+        let mut messages = crate::core::shell::Bus::new();
+        let (state, _) = ui.update(
+            &Headless,
+            &Waker::noop(),
+            &[crate::core::Event::Mouse(
+                crate::core::mouse::Event::ButtonPressed(crate::core::mouse::Button::Left),
+            )],
+            crate::core::mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut messages,
+        );
+        assert_eq!(messages.len(), 1);
+        state
+    }
+
+    fn committed_motion(state: &crate::runtime::user_interface::State) -> (bool, bool) {
+        let crate::runtime::user_interface::State::Updated {
+            animates_committed_scene,
+            is_animation_only,
+            ..
+        } = state
+        else {
+            panic!("fixture changed its structure")
+        };
+        (*animates_committed_scene, *is_animation_only)
+    }
+
+    #[test]
+    fn motion_published_with_a_message_animates_the_committed_scene() {
+        assert_eq!(committed_motion(&pressed(false, true)), (true, false));
+    }
+
+    #[test]
+    fn a_repaint_or_undrawn_material_keeps_motion_off_the_committed_scene() {
+        assert_eq!(committed_motion(&pressed(true, true)), (false, false));
+        assert_eq!(committed_motion(&pressed(false, false)), (false, false));
+    }
+
+    fn admit(
+        scene: Option<&Recording>,
+        requires_layout_ownership: bool,
+        lane_running: bool,
+        shown_by_ui: bool,
+    ) -> super::Admission {
+        super::admission(
+            requires_layout_ownership,
+            &[proposed_animation(1)],
+            super::Committed {
+                scene,
+                lane_available: true,
+                lane_running,
+                shown_by_ui,
+            },
+            std::time::Instant::now(),
+        )
+    }
+
+    #[test]
+    fn committed_motion_admission_follows_the_scene_on_screen() {
+        use super::Admission::{Animate, HandOver, Refuse};
+        let plain = Recording::new(());
+        let owned = handover_recording();
+        assert_eq!(admit(Some(&plain), false, true, false), Animate);
+        assert_eq!(admit(Some(&plain), false, false, true), HandOver);
+        assert_eq!(admit(Some(&plain), false, false, false), Refuse);
+        assert_eq!(admit(Some(&plain), true, true, true), Refuse);
+        assert_eq!(admit(Some(&owned), true, false, false), HandOver);
+        assert_eq!(admit(None, false, true, true), Refuse);
+    }
+
+    #[test]
+    fn committed_motion_admission_refuses_expired_tenure_and_finished_travel() {
+        use super::Admission::Refuse;
+        use crate::core::{
+            Length, Padding, Size,
+            layout::{Limits, Node},
+        };
+        let recorder = crate::core::renderer::docked::Recorder::default();
+        recorder.observe_layout();
+        let owned = Recording::new(())
+            .with_presentation(driver_program(&[1]))
+            .with_docked_tenure(recorder.tenure());
+        let _ = Node::new(Size::new(1.0, 1.0)).with_clip_presentation(
+            Limits::new(Size::ZERO, Size::new(1.0, 1.0)),
+            Size::new(Length::Fill, Length::Fill),
+            Padding::ZERO,
+        );
+        recorder.observe_layout();
+        assert_eq!(admit(Some(&owned), true, false, false), Refuse);
+
+        let finished = super::admission(
+            false,
+            &[proposed_animation(1)],
+            super::Committed {
+                scene: Some(&Recording::new(())),
+                lane_available: true,
+                lane_running: true,
+                shown_by_ui: true,
+            },
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(finished, Refuse);
+    }
+
     fn handover_recording() -> Recording {
         let recorder = crate::core::renderer::docked::Recorder::default();
         recorder.observe_layout();

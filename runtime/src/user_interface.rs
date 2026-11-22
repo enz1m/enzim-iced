@@ -579,6 +579,7 @@ where
         let mut tracks: Vec<renderer::Track> = Vec::new();
         let mut animations: Vec<renderer::TrackAnimation> = Vec::new();
         let mut is_animation_only = !self.material_dirty;
+        let mut paints_only_tracks = !self.material_dirty;
         // Whether every event asked for nothing but content redraws, and
         // whether any did (enzUI-ICED #3442).
         let mut content_only = true;
@@ -633,6 +634,8 @@ where
 
                 // Collect tracks before layout validation; the caller alone decides whether replay is safe.
                 let frame_was_animation_only = shell.is_animation_only();
+                paints_only_tracks &= shell.invalidation() == shell::Invalidation::None
+                    && shell.redraw_requesters() == 0;
                 repainting |= shell.is_repainting();
                 content_only &= shell.is_quiet();
                 content_requested |= shell.content_requests() > 0;
@@ -861,6 +864,8 @@ where
 
                 // Collect tracks before layout validation; the caller alone decides whether replay is safe.
                 let frame_was_animation_only = shell.is_animation_only();
+                paints_only_tracks &= shell.invalidation() == shell::Invalidation::None
+                    && shell.redraw_requesters() == 0;
                 repainting |= shell.is_repainting();
                 content_only &= shell.is_quiet();
                 content_requested |= shell.content_requests() > 0;
@@ -965,11 +970,16 @@ where
             .iter()
             .any(|event| matches!(event, Event::Window(window::Event::DecorationsChanged(_))));
 
-        let is_animation_only = is_animation_only
-            && self
-                .tracked_since_draw
-                .iter()
-                .all(|node| tracks.iter().any(|track| track.node == *node));
+        let tracked_nodes_covered = self
+            .tracked_since_draw
+            .iter()
+            .all(|node| tracks.iter().any(|track| track.node == *node));
+        let is_animation_only = is_animation_only && tracked_nodes_covered;
+        let animates_committed_scene = paints_only_tracks
+            && tracked_nodes_covered
+            && !tracks.is_empty()
+            && !outdated
+            && !has_layout_changed;
         if is_animation_only {
             for track in &tracks {
                 if let Err(index) = self.tracked_since_draw.binary_search(&track.node) {
@@ -1002,6 +1012,7 @@ where
                     animations,
                     requires_layout_ownership,
                     is_animation_only: is_animation_only && !has_layout_changed,
+                    animates_committed_scene,
                     is_content_only: content_requested && content_only && !has_layout_changed,
                     is_repainting: repainting,
                     redraw_requesters,
@@ -1769,6 +1780,8 @@ pub enum State {
         /// this false until drawing. Replay still requires usable tracks and a
         /// valid committed scene.
         is_animation_only: bool,
+        /// Whether the tracks can animate the committed scene while messages are handled.
+        animates_committed_scene: bool,
         /// Whether this update asked only for content redraws
         /// ([`Shell::request_content_redraw`]): the last frame can be
         /// presented again with its primitives prepared, entering no widget

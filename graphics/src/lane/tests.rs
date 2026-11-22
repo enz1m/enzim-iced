@@ -891,3 +891,231 @@ fn a_re_timed_travel_replaces_the_curve_of_the_same_generation() {
     assert_eq!(current.len(), 1);
     assert_eq!(current[0].start, delayed.start, "the later timing is taken");
 }
+
+fn driver_program(driver: u64) -> Arc<crate::core::renderer::presentation::Program> {
+    use crate::core::Length;
+    use crate::core::layout::{Limits, responsive::Rule};
+    use crate::core::renderer::presentation::{
+        Bounds, Expression, Layout, Node, Program, Responsive,
+    };
+    let fixed = Node {
+        id: 100,
+        layout: Layout::Fixed {
+            recorded: Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
+        },
+        children: vec![],
+    };
+    let reserve = Node {
+        id: 101,
+        layout: Layout::Responsive(Arc::new(Responsive {
+            limits: Limits::new(Size::ZERO, Size::new(300.0, 200.0)),
+            rule: Rule::Reserve {
+                resting: 280.0,
+                progress: 0.5,
+                align_end: false,
+            },
+            child: Size::new(Length::Shrink, Length::Shrink),
+            driver: Some(driver),
+            progress: Some(0),
+        })),
+        children: vec![0],
+    };
+    Arc::new(
+        Program::new(
+            vec![
+                Expression::Driver {
+                    node: driver,
+                    channel: 0,
+                },
+                Expression::Constant(0.0),
+            ],
+            vec![fixed, reserve],
+            vec![],
+            [1, 1],
+            Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 320.0,
+                height: 200.0,
+            },
+        )
+        .unwrap(),
+    )
+}
+
+fn progress(node: u64, duration_ms: u64) -> TrackAnimation {
+    let at = |value: f32| Track {
+        translation: Vector::new(value, 0.0),
+        ..Track::identity(NodeId(node))
+    };
+    TrackAnimation {
+        node: NodeId(node),
+        generation: 1,
+        start: time::Instant::now(),
+        duration: time::Duration::from_millis(duration_ms),
+        keyframes: vec![(0.0, at(0.0)), (1.0, at(1.0))],
+    }
+}
+
+type Presented = (time::Instant, u32, f32);
+
+struct Layouts {
+    driver: NodeId,
+    frames: Arc<std::sync::Mutex<Vec<Presented>>>,
+    scene: u32,
+    value: f32,
+}
+
+impl Backend for Layouts {
+    type Surface = u64;
+    fn configure(&mut self, _: &mut u64, _: u32, _: u32) {}
+    fn replay(&mut self, _: &Viewport, scene: &Recording, tracks: &[Track]) -> bool {
+        self.scene = scene.payload::<u32>().copied().unwrap_or_default();
+        self.value = tracks
+            .iter()
+            .find(|track| track.node == self.driver)
+            .map_or(f32::NAN, |track| track.translation.x);
+        true
+    }
+    fn present(
+        &mut self,
+        _: &mut u64,
+        _: &Viewport,
+        _: Color,
+        before: &mut dyn FnMut(),
+    ) -> Result<(), SurfaceError> {
+        before();
+        std::thread::sleep(time::Duration::from_millis(4));
+        self.frames
+            .lock()
+            .unwrap()
+            .push((time::Instant::now(), self.scene, self.value));
+        Ok(())
+    }
+    fn presentation_quality(&self) -> PresentationQuality {
+        PresentationQuality::Submitted
+    }
+}
+
+fn owned_lane() -> (
+    Lane<u64>,
+    Arc<std::sync::Mutex<Vec<Presented>>>,
+    mpsc::Receiver<()>,
+) {
+    let frames = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let lane = spawn(Layouts {
+        driver: NodeId(7),
+        frames: frames.clone(),
+        scene: 0,
+        value: f32::NAN,
+    })
+    .unwrap_or_else(|_| panic!("backend admission unavailable"));
+    let (wake, woke) = mpsc::channel();
+    lane.on_stop(move || {
+        let _ = wake.send(());
+    });
+    (lane, frames, woke)
+}
+
+fn owned_scene(id: u32, recorder: &crate::core::renderer::docked::Recorder) -> Recording {
+    recorder.observe_layout();
+    Recording::new(id)
+        .with_presentation(driver_program(7))
+        .with_docked_tenure(recorder.tenure())
+}
+
+#[test]
+fn a_blocked_ui_thread_neither_stalls_nor_rewinds_an_owned_travel() {
+    const BLOCKED: time::Duration = time::Duration::from_millis(200);
+    let (mut lane, frames, woke) = owned_lane();
+    let recorder = crate::core::renderer::docked::Recorder::default();
+    let committed = owned_scene(1, &recorder);
+    let committed_tenure = committed.docked_tenure().unwrap().clone();
+    let travel = progress(7, 600);
+    lane.commit(
+        committed,
+        1,
+        viewport(),
+        Color::BLACK,
+        vec![],
+        vec![travel.clone()],
+        None,
+        true,
+        false,
+    );
+    assert!(lane.start(5, viewport(), Color::BLACK).is_none());
+
+    let blocked_at = time::Instant::now();
+    std::thread::sleep(BLOCKED);
+    // A fresh layout identity makes activation expire the original tenure.
+    let _ = crate::core::layout::Node::new(Size::new(1.0, 1.0)).with_clip_presentation(
+        crate::core::layout::Limits::new(Size::ZERO, Size::new(1.0, 1.0)),
+        Size::new(crate::core::Length::Fill, crate::core::Length::Fill),
+        crate::core::Padding::ZERO,
+    );
+    let staged = recorder.stage();
+    staged.observe_layout();
+    let replacement = Recording::new(2_u32)
+        .with_presentation(driver_program(7))
+        .with_docked_tenure(staged.tenure());
+    let replacement_tenure = replacement.docked_tenure().unwrap().clone();
+    assert!(
+        committed_tenure.is_current(),
+        "staging leaves the lane's tenure"
+    );
+    let unblocked_at = time::Instant::now();
+    lane.commit(
+        replacement,
+        2,
+        viewport(),
+        Color::BLACK,
+        vec![],
+        vec![travel],
+        Some(unblocked_at),
+        false,
+        false,
+    );
+
+    woke.recv_timeout(time::Duration::from_secs(5))
+        .expect("the travel settles");
+    let (_, report) = lane.reclaim().expect("surface must be returned");
+    assert_eq!(
+        report.stop,
+        Stop::Settled,
+        "no reclaim interrupted the travel"
+    );
+    assert_eq!(lane.scene_commits(), 2);
+    assert!(replacement_tenure.is_current());
+    assert!(
+        !committed_tenure.is_current(),
+        "the replaced layout expired"
+    );
+
+    let frames = frames.lock().unwrap().clone();
+    let during = frames
+        .iter()
+        .filter(|(at, ..)| (blocked_at..unblocked_at).contains(at))
+        .count();
+    assert!(during >= 2, "{during} frames while blocked");
+    assert_eq!(lane.invisible_skips(), 0);
+
+    let first_replacement = frames
+        .iter()
+        .position(|(_, scene, _)| *scene == 2)
+        .expect("the replacement is presented");
+    assert!(
+        frames[first_replacement..]
+            .iter()
+            .all(|(_, scene, _)| *scene == 2)
+    );
+    assert!(
+        frames.windows(2).all(|pair| pair[1].2 >= pair[0].2),
+        "the travel never rewinds across the replacement"
+    );
+    assert_eq!(frames.last().unwrap().2, 1.0);
+}

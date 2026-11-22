@@ -577,7 +577,12 @@ const INVISIBLE_PIXELS: f32 = 0.3;
 const INVISIBLE_OPACITY: f32 = 1.0 / 255.0;
 
 /// Whether `next` would paint the same picture as `presented`.
-fn tracks_visually_equal(next: &[Track], presented: &[Track], viewport: &Viewport) -> bool {
+fn tracks_visually_equal(
+    next: &[Track],
+    presented: &[Track],
+    viewport: &Viewport,
+    layout: Option<&crate::core::renderer::presentation::Program>,
+) -> bool {
     if next.len() != presented.len() {
         return false;
     }
@@ -589,6 +594,10 @@ fn tracks_visually_equal(next: &[Track], presented: &[Track], viewport: &Viewpor
         let Some(old) = presented.iter().find(|old| old.node == track.node) else {
             return false;
         };
+        // A layout driver carries progress whose pixel extent only the program's layout knows.
+        if layout.is_some_and(|program| program.layout_drivers().any(|node| node == track.node.0)) {
+            return track == old;
+        }
         let clip_same = match (track.clip, old.clip) {
             (None, None) => true,
             (Some(a), Some(b)) => {
@@ -1251,7 +1260,12 @@ fn spawn_reserved<B: Backend>(backend: B, permit: admission::Permit) -> Lane<B::
                     if presented > 0
                         && still_running
                         && !dirty_since_present
-                        && tracks_visually_equal(&sampled, &last_tracks, &viewport)
+                        && tracks_visually_equal(
+                            &sampled,
+                            &last_tracks,
+                            &viewport,
+                            scene.presentation().map(Arc::as_ref),
+                        )
                     {
                         let _ = counters.invisible_skips.fetch_add(1, Ordering::Relaxed);
                         drop(scene);

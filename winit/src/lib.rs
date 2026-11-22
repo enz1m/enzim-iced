@@ -1519,6 +1519,25 @@ async fn run_instance<P>(
                             if !messages.is_empty()
                                 || matches!(state, user_interface::State::Outdated)
                             {
+                                if let user_interface::State::Updated {
+                                    animates_committed_scene: true,
+                                    tracks,
+                                    animations,
+                                    requires_layout_ownership,
+                                    ..
+                                } = &state
+                                {
+                                    let _ = window.admit_committed_motion(
+                                        current_compositor,
+                                        *requires_layout_ownership,
+                                        tracks,
+                                        animations,
+                                        |renderer, animations, delay| {
+                                            interface
+                                                .rebase_docked_clocks(renderer, animations, delay)
+                                        },
+                                    );
+                                }
                                 rebuilt = true;
                                 let mut caches: FxHashMap<_, _> =
                                     ManuallyDrop::into_inner(user_interfaces)
@@ -2881,6 +2900,28 @@ async fn run_instance<P>(
                                 Some(_) => statuses.into_iter().skip(1).collect::<Vec<_>>(),
                                 None => statuses,
                             };
+
+                            if let (
+                                Some(compositor),
+                                user_interface::State::Updated {
+                                    animates_committed_scene: true,
+                                    tracks,
+                                    animations,
+                                    requires_layout_ownership,
+                                    ..
+                                },
+                            ) = (compositor.as_ref(), &ui_state)
+                            {
+                                let _ = window.admit_committed_motion(
+                                    compositor,
+                                    *requires_layout_ownership,
+                                    tracks,
+                                    animations,
+                                    |renderer, animations, delay| {
+                                        interface.rebase_docked_clocks(renderer, animations, delay)
+                                    },
+                                );
+                            }
 
                             #[cfg(feature = "performance-observer")]
                             {
