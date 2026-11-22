@@ -977,7 +977,7 @@ where
             shell.request_redraw();
         }
         let smooth_scroll = self.resolved_smooth_scroll(state);
-        if !smooth_scroll {
+        if !smooth_scroll && !state.flinging() {
             state.settle();
         }
         let bounds = layout.bounds();
@@ -1719,6 +1719,50 @@ struct State {
     /// is held off until this instant; the point is where the pointer was
     /// held, so a real move ends the hold early.
     hover_hold: Option<(Instant, Point)>,
+    /// Velocity of the finger scrolling this scrollable.
+    touch: Option<TouchTracker>,
+    /// Whether the animation continues with smooth scrolling off.
+    fling: bool,
+}
+
+/// Tracks the scrolling velocity of a finger, in offset pixels per second.
+#[derive(Debug, Clone, Copy)]
+struct TouchTracker {
+    /// When the velocity was last sampled.
+    sampled: Instant,
+    /// The scroll moved since `sampled`, not yet folded into `velocity`.
+    pending: Vector,
+    velocity: Vector,
+}
+
+impl TouchTracker {
+    fn new(now: Instant) -> Self {
+        Self {
+            sampled: now,
+            pending: Vector::ZERO,
+            velocity: Vector::ZERO,
+        }
+    }
+
+    /// Records a scroll of `delta` at `now`. Moves closer together than a
+    /// sample interval accumulate, so events batched into one frame do not
+    /// read as an enormous speed.
+    fn record(&mut self, delta: Vector, now: Instant) {
+        self.pending += delta;
+        let elapsed = (now - self.sampled).as_secs_f32();
+        if elapsed < FLING_SAMPLE_INTERVAL {
+            return;
+        }
+        let instant = self.pending * (1.0 / elapsed);
+        // A long pause means the finger rested: start over from this move.
+        self.velocity = if elapsed > FLING_IDLE {
+            instant
+        } else {
+            self.velocity * 0.25 + instant * 0.75
+        };
+        self.pending = Vector::ZERO;
+        self.sampled = now;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1901,6 +1945,8 @@ impl Default for State {
             layout_notice: false,
             full_content_dispatch: true,
             hover_hold: None,
+            touch: None,
+            fling: false,
         }
     }
 }
@@ -2310,6 +2356,23 @@ const SMOOTH_SCROLL_RETARGET_VELOCITY_BOUND: f32 = 2.5;
 /// Chromium's.
 const SMOOTH_SCROLL_SLOPE_CLAMP: f32 = 1000.0;
 
+/// Touch flings (enzICED). A lifted finger keeps the content moving with its
+/// last velocity, decelerating along the smooth scrolling curve: the distance
+/// is the velocity times `FLING_TIME_CONSTANT`, and the initial slope is kept
+/// at or below `1 / SMOOTH_SCROLL_BEZIER_X1`, where the curve eases out
+/// without overshooting its target.
+const FLING_TIME_CONSTANT: f32 = 0.33;
+const FLING_DURATION: f32 = 0.78;
+/// The slowest lift (offset pixels per second) that flings, and the fastest
+/// speed a fling starts with.
+const FLING_MIN_SPEED: f32 = 250.0;
+const FLING_MAX_SPEED: f32 = 8000.0;
+/// The shortest interval (seconds) a velocity sample spans.
+const FLING_SAMPLE_INTERVAL: f32 = 0.008;
+/// A finger that rested longer than this (seconds) before lifting does not
+/// fling.
+const FLING_IDLE: f32 = 0.06;
+
 // The held-rail behavior below (the press delay, the autoscroll
 // velocity, and the page step) is derived from the Chromium
 // project's compositor scrollbar controller (`cc/input/
@@ -2439,6 +2502,7 @@ impl State {
         content: Size,
         now: Instant,
     ) {
+        self.fling = false;
         let current = Point::new(
             self.offset_x.absolute(bounds.width, content.width),
             self.offset_y.absolute(bounds.height, content.height),
@@ -2650,6 +2714,78 @@ impl State {
     fn cancel(&mut self) {
         self.target = None;
         self.last_frame = None;
+        self.fling = false;
+    }
+
+    /// Whether a touch fling is still running.
+    fn flinging(&self) -> bool {
+        self.fling && self.target.is_some()
+    }
+
+    /// Flings the content after a finger lifted at `now`, keeping its last
+    /// velocity and decelerating to rest. Returns whether a fling started.
+    fn fling(
+        &mut self,
+        tracker: TouchTracker,
+        bounds: Rectangle,
+        content: Size,
+        now: Instant,
+    ) -> bool {
+        if (now - tracker.sampled).as_secs_f32() > FLING_IDLE {
+            return false;
+        }
+        let velocity = tracker.velocity;
+        let speed = velocity.x.hypot(velocity.y);
+        if !speed.is_finite() || speed < FLING_MIN_SPEED {
+            return false;
+        }
+        let velocity = velocity * (speed.min(FLING_MAX_SPEED) / speed);
+        let current = Point::new(
+            self.offset_x.absolute(bounds.width, content.width),
+            self.offset_y.absolute(bounds.height, content.height),
+        );
+        let destination = Vector::new(
+            Self::clamp_offset(
+                current.x + velocity.x * FLING_TIME_CONSTANT,
+                bounds.width,
+                content.width,
+            ),
+            Self::clamp_offset(
+                current.y + velocity.y * FLING_TIME_CONSTANT,
+                bounds.height,
+                content.height,
+            ),
+        );
+        let travel = Vector::new(destination.x - current.x, destination.y - current.y);
+        // The segment's speed is measured along its largest dimension.
+        let (distance, speed) = if travel.x.abs() > travel.y.abs() {
+            (travel.x.abs(), velocity.x.abs())
+        } else {
+            (travel.y.abs(), velocity.y.abs())
+        };
+        if distance < 1.0 || speed < 1.0 {
+            return false;
+        }
+        let max_slope = 1.0 / SMOOTH_SCROLL_BEZIER_X1;
+        let mut duration = FLING_DURATION;
+        let mut slope = speed * duration / distance;
+        if slope > max_slope {
+            // An edge cut the fling short: arrive sooner, still at the
+            // finger's speed.
+            duration = (max_slope * distance / speed).max(SMOOTH_SCROLL_FRAME_DELAY);
+            slope = max_slope;
+        }
+        self.target = Some(Target::absolute(destination));
+        self.segment = Segment {
+            start: current,
+            started: now,
+            duration,
+            slope,
+        };
+        self.last_frame = Some(now);
+        self.source = Some(Source::Touch);
+        self.fling = true;
+        true
     }
 
     /// Lands any in-progress smooth scrolling animation on its target at once
@@ -3571,6 +3707,16 @@ impl State {
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
                 | Event::Touch(touch::Event::FingerLifted { .. } | touch::Event::FingerLost { .. })
         ) {
+            if let Event::Touch(touch::Event::FingerLifted { .. }) = event
+                && matches!(self.interaction, Interaction::TouchScrolling(_))
+                && let Some(tracker) = self.touch
+                && self.fling(tracker, bounds, content, Instant::now())
+            {
+                update.request_redraw = true;
+            }
+            if matches!(event, Event::Touch(_)) {
+                self.touch = None;
+            }
             self.interaction = Interaction::None;
             return update;
         }
@@ -3683,7 +3829,12 @@ impl State {
                             return update;
                         };
 
+                        // A touch catches a running fling where it is.
+                        if self.flinging() {
+                            self.cancel();
+                        }
                         self.interaction = Interaction::TouchScrolling(position);
+                        self.touch = Some(TouchTracker::new(Instant::now()));
                         update.capture = true;
                     }
                     touch::Event::FingerMoved { .. } => {
@@ -3699,6 +3850,7 @@ impl State {
                             };
 
                             self.interaction = Interaction::TouchScrolling(position);
+                            self.touch = Some(TouchTracker::new(Instant::now()));
                             update.capture = true;
                             return update;
                         };
@@ -3712,6 +3864,10 @@ impl State {
 
                         self.scroll(direction.align(delta), bounds, content);
 
+                        let moved = self.destination(bounds, content) - before;
+                        self.touch
+                            .get_or_insert_with(|| TouchTracker::new(Instant::now()))
+                            .record(moved, Instant::now());
                         self.interaction = Interaction::TouchScrolling(cursor_position);
                         self.source = Some(Source::Touch);
 
@@ -4370,6 +4526,84 @@ pub fn default(theme: &Theme, status: Status) -> Style {
 #[cfg(test)]
 mod scroll_timing_tests {
     use super::*;
+
+    #[test]
+    fn lifted_swipe_flings_and_eases_to_rest() {
+        let bounds = Rectangle::with_size(Size::new(800.0, 200.0));
+        let content = Size::new(800.0, 3000.0);
+        let started = Instant::now();
+        let mut tracker = TouchTracker::new(started);
+        for frame in 1..=6 {
+            tracker.record(
+                Vector::new(0.0, 20.0),
+                started + Duration::from_millis(frame * 10),
+            );
+        }
+        assert!((tracker.velocity.y - 2000.0).abs() < 1.0);
+
+        let mut state = State::new();
+        let lifted = started + Duration::from_millis(65);
+        assert!(state.fling(tracker, bounds, content, lifted));
+        assert!(state.flinging());
+        let destination = state.destination(bounds, content).y;
+        assert!((destination - 2000.0 * FLING_TIME_CONSTANT).abs() < 1.0);
+        // The fling starts at the finger's speed and slows without overshoot.
+        assert!((state.animated_velocity(lifted) - 2000.0).abs() < 20.0);
+        let mut previous = 0.0;
+        for ms in (16..800).step_by(16) {
+            let _ = state.step(lifted + Duration::from_millis(ms), bounds, content);
+            let y = state.offset_y.absolute(bounds.height, content.height);
+            assert!(y >= previous && y <= destination + 0.01);
+            previous = y;
+        }
+        assert!(!state.flinging());
+        assert_eq!(
+            state.offset_y.absolute(bounds.height, content.height),
+            destination
+        );
+    }
+
+    #[test]
+    fn resting_or_slow_lifts_do_not_fling() {
+        let bounds = Rectangle::with_size(Size::new(800.0, 200.0));
+        let content = Size::new(800.0, 3000.0);
+        let started = Instant::now();
+        let mut tracker = TouchTracker::new(started);
+        tracker.record(Vector::new(0.0, 40.0), started + Duration::from_millis(20));
+        let mut state = State::new();
+        assert!(!state.fling(
+            tracker,
+            bounds,
+            content,
+            started + Duration::from_millis(200)
+        ));
+        let mut slow = TouchTracker::new(started);
+        slow.record(Vector::new(0.0, 1.0), started + Duration::from_millis(20));
+        assert!(!state.fling(slow, bounds, content, started + Duration::from_millis(25)));
+        assert!(state.target.is_none());
+    }
+
+    #[test]
+    fn fling_stops_at_the_content_edge() {
+        let bounds = Rectangle::with_size(Size::new(800.0, 200.0));
+        let content = Size::new(800.0, 400.0);
+        let started = Instant::now();
+        let mut tracker = TouchTracker::new(started);
+        tracker.record(Vector::new(0.0, 60.0), started + Duration::from_millis(10));
+        let mut state = State::new();
+        assert!(state.fling(
+            tracker,
+            bounds,
+            content,
+            started + Duration::from_millis(12)
+        ));
+        assert_eq!(state.destination(bounds, content).y, 200.0);
+        let _ = state.step(started + Duration::from_secs(2), bounds, content);
+        assert_eq!(
+            state.offset_y.absolute(bounds.height, content.height),
+            200.0
+        );
+    }
 
     #[test]
     fn content_hover_is_suspended_until_smooth_scroll_settles() {
