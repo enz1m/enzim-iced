@@ -2429,6 +2429,7 @@ impl Renderer {
             self.layers.iter(),
             viewport.scale_factor(),
             self.engine.device.limits().max_texture_dimension_2d,
+            self.independent_replay,
         ) {
             self.presentation_refusal = Some(error);
             return Err(error);

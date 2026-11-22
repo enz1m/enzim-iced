@@ -214,6 +214,7 @@ impl Assets {
         layers: impl Iterator<Item = &'a Layer>,
         scale: f32,
         maximum: u32,
+        independent_replay: bool,
     ) -> Result<(), Error> {
         #[cfg(feature = "svg")]
         {
@@ -229,7 +230,10 @@ impl Assets {
                 for image in &layer.images {
                     if let graphics::Image::Vector { svg, bounds, .. } = image {
                         if !self.vectors.contains_key(&svg.handle.id()) {
-                            return Err(Error::MediaAssets);
+                            if independent_replay {
+                                return Err(Error::MediaAssets);
+                            }
+                            continue;
                         }
                         // The same nudged rounding as the image pipeline
                         // (upstream #3466), so the budgeted raster key is the
@@ -618,6 +622,45 @@ pub(crate) fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn live_svg_can_share_a_frame_with_retained_svg() {
+        let retained = core::svg::Handle::from_memory(
+            b"<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'><rect width='8' height='8'/></svg>"
+                .as_slice(),
+        );
+        let native = core::svg::Handle::from_memory(
+            b"<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32'/></svg>"
+                .as_slice(),
+        );
+        let source = crate::image::vector::Cache::default()
+            .source(&retained)
+            .expect("recordable SVG");
+        let mut assets = Assets::default();
+        let _ = assets.vectors.insert(retained.id(), source);
+        let mut layer = Layer::default();
+        for (handle, side) in [(retained, 8.0), (native, 32.0)] {
+            let bounds = Rectangle::with_size(core::Size::new(side, side));
+            layer.images.push(graphics::Image::Vector {
+                svg: core::Svg::new(handle),
+                bounds,
+                clip_bounds: bounds,
+            });
+        }
+        assert_eq!(
+            assets.validate_viewport([&layer].into_iter(), 1.0, 16, false),
+            Ok(())
+        );
+        assert_eq!(
+            assets.validate_viewport([&layer].into_iter(), 1.0, 16, true),
+            Err(Error::MediaAssets)
+        );
+        assert_eq!(
+            assets.validate_viewport([&layer].into_iter(), 1.0, 4, false),
+            Err(Error::Budget)
+        );
+    }
 
     #[test]
     fn resource_reclamation_media_admission_refuses_count_and_bytes() {
