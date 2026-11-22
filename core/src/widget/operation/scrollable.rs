@@ -40,6 +40,7 @@ pub fn snap_to<T>(
     offset: RelativeOffset<Option<f32>>,
     animation: Animation,
 ) -> impl Operation<T> {
+    #[derive(Clone)]
     struct SnapTo {
         target: Id,
         offset: RelativeOffset<Option<f32>>,
@@ -49,6 +50,11 @@ pub fn snap_to<T>(
     impl<T> Operation<T> for SnapTo {
         fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<T>)) {
             operate(self);
+        }
+
+        fn clone_for_deferred(&self) -> Option<Box<dyn Operation>> {
+            (self.animation == Animation::Instant)
+                .then(|| Box::new(self.clone()) as Box<dyn Operation>)
         }
 
         fn scrollable(

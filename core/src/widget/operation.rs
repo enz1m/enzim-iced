@@ -86,6 +86,12 @@ pub trait Operation<T = ()>: Send {
         false
     }
 
+    /// Copies an operation that a hidden subtree can apply when next laid out.
+    /// The copy must need neither current input geometry nor an observable result.
+    fn clone_for_deferred(&self) -> Option<Box<dyn Operation>> {
+        None
+    }
+
     /// Visits a clock group without invoking widget layout or user actions.
     fn docked_clock(&mut self, _clock: &mut dyn DockedClock) {}
 
@@ -168,6 +174,9 @@ where
     }
     fn is_docked_clock_rebase(&self) -> bool {
         self.as_ref().is_docked_clock_rebase()
+    }
+    fn clone_for_deferred(&self) -> Option<Box<dyn Operation>> {
+        self.as_ref().clone_for_deferred()
     }
     fn docked_clock(&mut self, clock: &mut dyn DockedClock) {
         self.as_mut().docked_clock(clock);
@@ -309,6 +318,9 @@ where
         fn is_docked_clock_rebase(&self) -> bool {
             self.operation.is_docked_clock_rebase()
         }
+        fn clone_for_deferred(&self) -> Option<Box<dyn Operation>> {
+            self.operation.clone_for_deferred()
+        }
         fn docked_clock(&mut self, clock: &mut dyn DockedClock) {
             self.operation.docked_clock(clock);
         }
@@ -407,6 +419,9 @@ where
                 fn is_docked_clock_rebase(&self) -> bool {
                     self.operation.is_docked_clock_rebase()
                 }
+                fn clone_for_deferred(&self) -> Option<Box<dyn Operation>> {
+                    self.operation.clone_for_deferred()
+                }
                 fn docked_clock(&mut self, clock: &mut dyn DockedClock) {
                     self.operation.docked_clock(clock);
                 }
@@ -482,6 +497,9 @@ where
         }
         fn is_docked_clock_rebase(&self) -> bool {
             self.operation.is_docked_clock_rebase()
+        }
+        fn clone_for_deferred(&self) -> Option<Box<dyn Operation>> {
+            self.operation.clone_for_deferred()
         }
         fn docked_clock(&mut self, clock: &mut dyn DockedClock) {
             self.operation.docked_clock(clock);
