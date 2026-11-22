@@ -187,6 +187,11 @@ impl<'a, Message> Shell<'a, Message> {
         self.bus.messages.is_empty()
     }
 
+    /// Counts messages buffered for delivery to the application.
+    pub fn message_count(&self) -> usize {
+        self.bus.messages.len()
+    }
+
     /// Publish the given `Message` for an application to process it.
     pub fn publish(&mut self, message: Message) {
         let _ = self.publish_and_track(message);
