@@ -68,7 +68,10 @@ impl Plan {
                 // until its completion arrives as a message of its own, which
                 // invalidates for itself. A video frame or a decoded picture
                 // handed over this way then redraws nothing early.
-                Action::Image(crate::runtime::image::Action::Allocate(..)) => {}
+                Action::Image(
+                    crate::runtime::image::Action::Allocate(..)
+                    | crate::runtime::image::Action::AllocateIn(..),
+                ) => {}
                 // Everything else may move state that any `view` reads:
                 // window actions, renderer/backend changes, fonts, images,
                 // widget operations, reloads. Those keep global invalidation
@@ -463,19 +466,28 @@ mod tests {
     /// plan dirties every window.
     #[test]
     fn an_image_allocation_keeps_a_narrow_declaration() {
-        let window = Id::unique();
-        let (sender, _receiver) = crate::runtime::futures::futures::channel::oneshot::channel();
-        let actions: Vec<Action<()>> = vec![
-            Action::Image(crate::runtime::image::Action::Allocate(
-                crate::core::image::Handle::from_rgba(1, 1, vec![0; 4]),
-                sender,
-            )),
-            Action::Invalidate(crate::runtime::window::Invalidation::none()),
-        ];
-        let plan = Plan::from_actions(&actions);
+        use crate::runtime::image::Action as Image;
 
-        assert!(!plan.is_global());
-        assert!(!plan.is_dirty(window));
+        let window = Id::unique();
+        let allocations: [fn(Id, _, _) -> Image; 2] = [
+            |_, handle, sender| Image::Allocate(handle, sender),
+            Image::AllocateIn,
+        ];
+        for allocation in allocations {
+            let (sender, _receiver) = crate::runtime::futures::futures::channel::oneshot::channel();
+            let actions: Vec<Action<()>> = vec![
+                Action::Image(allocation(
+                    window,
+                    crate::core::image::Handle::from_rgba(1, 1, vec![0; 4]),
+                    sender,
+                )),
+                Action::Invalidate(crate::runtime::window::Invalidation::none()),
+            ];
+            let plan = Plan::from_actions(&actions);
+
+            assert!(!plan.is_global());
+            assert!(!plan.is_dirty(window));
+        }
     }
 
     #[test]

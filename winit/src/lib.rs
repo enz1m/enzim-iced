@@ -3328,6 +3328,54 @@ fn dispatch_widget_window_requests(
     }
 }
 
+/// Answers a window-targeted image allocation exactly once.
+///
+/// A renderer drops pending callbacks when it is replaced or its window
+/// closes. Without an answer, a caller that admits one upload at a time
+/// would wait forever, so a dropped reply fails the allocation instead.
+struct AllocationReply(Option<oneshot::Sender<Result<image::Allocation, image::Error>>>);
+
+impl AllocationReply {
+    fn send(mut self, allocation: Result<image::Allocation, image::Error>) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(allocation);
+        }
+    }
+}
+
+impl Drop for AllocationReply {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(Err(image::Error::Unsupported));
+        }
+    }
+}
+
+#[cfg(test)]
+mod allocation_reply_tests {
+    use super::{AllocationReply, image, oneshot};
+
+    /// A renderer replaced or closed with the upload pending drops its
+    /// callback; the caller must still hear back, or a one-upload-at-a-time
+    /// video presenter stalls on its last frame.
+    #[test]
+    fn a_dropped_window_allocation_fails_instead_of_never_answering() {
+        let (sender, mut receiver) = oneshot::channel();
+        drop(AllocationReply(Some(sender)));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Some(Err(image::Error::Unsupported)))
+        ));
+
+        let (sender, mut receiver) = oneshot::channel();
+        AllocationReply(Some(sender)).send(Err(image::Error::Empty));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Some(Err(image::Error::Empty)))
+        ));
+    }
+}
+
 /// Puts `new_compositor` under every window: each window's lane stops and its
 /// surface and renderer are rebuilt on the new device.
 fn install_compositor<P, C>(
@@ -4199,6 +4247,14 @@ fn run_action<'a, P, C>(
                     window.renderer.allocate_image(&handle, move |allocation| {
                         let _ = sender.send(allocation);
                     });
+                }
+            }
+            image::Action::AllocateIn(window, handle, sender) => {
+                let reply = AllocationReply(Some(sender));
+                if let Some(window) = window_manager.get_mut(window) {
+                    window
+                        .renderer
+                        .allocate_image(&handle, move |allocation| reply.send(allocation));
                 }
             }
         },
