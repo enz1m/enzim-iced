@@ -397,23 +397,41 @@ fn presentation_clock_now(_clock_id: u32) -> Option<std::time::Duration> {
 /// This is opt-in evidence and avoids scraping logging text, which can be
 /// disabled or reformatted independently of the backend actually selected.
 pub fn trace_information(information: &crate::graphics::compositor::Information) {
-    use std::io::Write as _;
+    trace_record(|| {
+        Some(format!(
+            "{{\"record\":\"graphics\",\"adapter\":{:?},\"backend\":{:?},\"device\":{:?}}}",
+            information.adapter, information.backend, information.device,
+        ))
+    });
+}
 
+fn trace_record(record: impl FnOnce() -> Option<String>) {
     let Some(path) = std::env::var_os("ICED_PRESENTATION_TRACE") else {
         return;
     };
-    let Ok(mut trace) = std::fs::OpenOptions::new()
+    if let Some(line) = record() {
+        append_record(path.as_ref(), line);
+    }
+}
+
+// Child processes can share the trace path, so each line needs one append.
+fn append_record(path: &std::path::Path, mut line: String) {
+    use std::io::Write as _;
+
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    debug_assert!(!line.contains('\n'), "a trace record must be one line");
+    line.push('\n');
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Ok(mut trace) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
-    else {
-        return;
-    };
-    let _ = writeln!(
-        trace,
-        "{{\"record\":\"graphics\",\"adapter\":{:?},\"backend\":{:?},\"device\":{:?}}}",
-        information.adapter, information.backend, information.device,
-    );
+    {
+        let _ = trace.write_all(line.as_bytes());
+    }
 }
 
 /// One UI-presented frame's wake timing and why it was not retained, as an
@@ -453,18 +471,7 @@ pub fn ui_frame_record(
 
 /// Appends [`ui_frame_record`] to `ICED_PRESENTATION_TRACE`, when it is set.
 pub fn trace_ui_frame(record: impl FnOnce() -> String) {
-    use std::io::Write as _;
-
-    let Some(path) = std::env::var_os("ICED_PRESENTATION_TRACE") else {
-        return;
-    };
-    if let Ok(mut trace) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(trace, "{}", record());
-    }
+    trace_record(|| Some(record()));
 }
 
 /// Builds the UI thread's own pre-commit submission for a frame it is about to
@@ -1094,19 +1101,11 @@ mod wayland {
     /// runs only on the dedicated Wayland dispatcher thread. In particular, a
     /// `SurfaceTexture::present()` return can never write this record.
     fn trace_resolved(resolved: &crate::graphics::presentation::Resolved) {
-        use crate::graphics::presentation::{Outcome, Quality};
-        use std::io::Write as _;
+        super::trace_record(|| resolved_record(resolved));
+    }
 
-        let Some(path) = std::env::var_os("ICED_PRESENTATION_TRACE") else {
-            return;
-        };
-        let Ok(mut trace) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        else {
-            return;
-        };
+    fn resolved_record(resolved: &crate::graphics::presentation::Resolved) -> Option<String> {
+        use crate::graphics::presentation::{Outcome, Quality};
 
         let frame = &resolved.frame;
         let tracks = frame
@@ -1124,8 +1123,7 @@ mod wayland {
                     .map(u32::to_string)
                     .collect::<Vec<_>>()
                     .join(",");
-                let _ = writeln!(
-                    trace,
+                Some(format!(
                     "{{\"record\":\"presentation\",\"milestone\":\"CompositorPresented\",\"window\":{},\"surface_generation\":{},\"ownership_generation\":{},\"scene_generation\":{},\"submitted_sequence\":{},\"owner\":\"{:?}\",\"tracks\":[{}],\"clock_id\":{},\"seconds\":{},\"nanoseconds\":{},\"refresh_ns\":{},\"compositor_sequence\":{},\"flags_raw\":{},\"output_ids\":[{}]}}",
                     frame.key.window_id,
                     frame.key.surface_generation,
@@ -1141,22 +1139,19 @@ mod wayland {
                     stamp.sequence,
                     stamp.flags_raw,
                     outputs,
-                );
+                ))
             }
-            (_, Outcome::Discarded) => {
-                let _ = writeln!(
-                    trace,
-                    "{{\"record\":\"presentation\",\"milestone\":\"Discarded\",\"window\":{},\"surface_generation\":{},\"ownership_generation\":{},\"scene_generation\":{},\"submitted_sequence\":{},\"owner\":\"{:?}\",\"tracks\":[{}]}}",
-                    frame.key.window_id,
-                    frame.key.surface_generation,
-                    frame.key.ownership_generation,
-                    frame.key.scene_generation,
-                    frame.key.submitted_sequence,
-                    frame.owner,
-                    tracks,
-                );
-            }
-            _ => {}
+            (_, Outcome::Discarded) => Some(format!(
+                "{{\"record\":\"presentation\",\"milestone\":\"Discarded\",\"window\":{},\"surface_generation\":{},\"ownership_generation\":{},\"scene_generation\":{},\"submitted_sequence\":{},\"owner\":\"{:?}\",\"tracks\":[{}]}}",
+                frame.key.window_id,
+                frame.key.surface_generation,
+                frame.key.ownership_generation,
+                frame.key.scene_generation,
+                frame.key.submitted_sequence,
+                frame.owner,
+                tracks,
+            )),
+            _ => None,
         }
     }
 
@@ -1742,5 +1737,42 @@ mod ui_frame_tests {
         assert!(record.contains("\"requested_to_wake_us\":null"), "{record}");
         assert!(record.contains("\"wake_to_submit_us\":null"), "{record}");
         assert!(record.ends_with("\"refusal\":null}"), "{record}");
+    }
+    #[test]
+    fn concurrent_trace_records_stay_whole_lines() {
+        let path = std::env::temp_dir().join(format!(
+            "iced-presentation-trace-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let writers = ["ui_frame", "presentation"].map(|record| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for sequence in 0..500 {
+                    append_record(
+                        &path,
+                        format!("{{\"record\":\"{record}\",\"submitted_sequence\":{sequence}}}"),
+                    );
+                }
+            })
+        });
+        for writer in writers {
+            writer.join().expect("writer thread should finish");
+        }
+
+        let text = std::fs::read_to_string(&path).expect("trace should exist");
+        let _ = std::fs::remove_file(&path);
+        let lines: Vec<_> = text.lines().collect();
+
+        assert_eq!(lines.len(), 1000);
+        for line in lines {
+            assert!(
+                (line.starts_with("{\"record\":\"ui_frame\",")
+                    || line.starts_with("{\"record\":\"presentation\","))
+                    && line.ends_with('}')
+                    && line.matches('{').count() == 1,
+                "{line}"
+            );
+        }
     }
 }
