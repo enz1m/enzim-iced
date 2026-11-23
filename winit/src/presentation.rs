@@ -106,6 +106,12 @@ pub trait FeedbackRequester: std::fmt::Debug + Send + Sync + 'static {
     /// rather than leave it pending forever.
     fn request(&self, frame: SubmittedFrame) -> bool;
 
+    /// Whether the protocol is usable now. Until it is, the window behaves
+    /// exactly as one with no requester: frames stay `SurfacePresented`.
+    fn available(&self) -> bool {
+        true
+    }
+
     /// Cancels callbacks owned by a retired window without waiting for native completion.
     fn cancel(&self, _window_id: u64) {}
 }
@@ -136,7 +142,7 @@ impl WindowPresentation {
     pub fn has_protocol(&self) -> bool {
         self.requester
             .lock()
-            .is_ok_and(|requester| requester.is_some())
+            .is_ok_and(|requester| requester.as_ref().is_some_and(|r| r.available()))
     }
 
     /// The surface generation currently in force.
@@ -188,7 +194,7 @@ impl WindowPresentation {
             self.sink.record_unfeedbacked();
             return None;
         };
-        let Some(requester) = requester.as_ref() else {
+        let Some(requester) = requester.as_ref().filter(|r| r.available()) else {
             // No protocol. Count it, so the evidence can say how many frames
             // are honestly `SurfacePresented` rather than leaving a silent gap.
             self.sink.record_unfeedbacked();
@@ -512,14 +518,11 @@ mod wayland {
     use std::collections::HashMap;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex, Weak};
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+    use wayland_client::protocol::wl_registry::{self, WlRegistry};
     use wayland_client::protocol::wl_surface::WlSurface;
-    use wayland_client::{
-        Connection, Dispatch, EventQueue, Proxy, QueueHandle,
-        backend::ObjectId,
-        globals::{GlobalList, GlobalListContents, registry_queue_init},
-    };
+    use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, backend::ObjectId};
     use wayland_protocols::wp::presentation_time::client::{
         wp_presentation::{self, WpPresentation},
         wp_presentation_feedback::{self, WpPresentationFeedback},
@@ -530,7 +533,7 @@ mod wayland {
     #[derive(Debug)]
     pub struct PresentationHub {
         connection: Connection,
-        presentation: WpPresentation,
+        _registry: WlRegistry,
         handle: QueueHandle<HubState>,
         state: Arc<HubShared>,
         pump: Pump,
@@ -551,6 +554,8 @@ mod wayland {
         windows: Mutex<HashMap<u64, Arc<WindowPresentation>>>,
         callbacks: Arc<FeedbackCallbacks>,
         retired: AtomicBool,
+        /// Bound on the reader thread when the registry announces the global.
+        presentation: OnceLock<WpPresentation>,
         /// The compositor's clock id, learned from `wp_presentation.clock_id`.
         clock_id: Mutex<Option<u32>>,
     }
@@ -564,6 +569,7 @@ mod wayland {
                     MAX_PENDING_FEEDBACK_BYTES,
                 )),
                 retired: AtomicBool::new(false),
+                presentation: OnceLock::new(),
                 clock_id: Mutex::new(None),
             }
         }
@@ -836,29 +842,19 @@ mod wayland {
     }
 
     impl PresentationHub {
-        /// Reconstitutes a guest queue on winit's display and binds
-        /// `wp_presentation`.
-        ///
-        /// Returns `None` -- never an error the caller might ignore -- when the
-        /// session is not Wayland or the compositor does not advertise the
-        /// protocol. Every frame then stays honestly `SurfacePresented`.
+        /// Starts asynchronous presentation feedback discovery on a Wayland display.
+        /// Frames remain `SurfacePresented` until the compositor advertises the protocol.
         pub fn new(display: winit::event_loop::OwnedDisplayHandle) -> Option<Arc<Self>> {
             let guest = GuestConnection::of(&display)?;
             let connection = guest.connection().clone();
 
-            let (globals, queue): (GlobalList, EventQueue<HubState>) =
-                registry_queue_init(&connection).ok()?;
-            let handle = queue.handle();
-
             let state = Arc::new(HubShared::default());
-
-            // Version 1..=2; a compositor without the global returns Err and we
-            // downgrade honestly rather than pretending.
-            let presentation: WpPresentation = globals.bind(&handle, 1..=2, ()).ok()?;
+            // The guest reader may consume a roundtrip reply before the UI starts polling.
+            let (mut queue, registry) = listen(&connection);
+            let handle = queue.handle();
 
             // The queue is dispatched on the guest's reader thread right after
             // each read, so feedback lands while the UI thread is busy.
-            let mut queue = queue;
             let mut hub_state = HubState {
                 shared: Arc::clone(&state),
             };
@@ -866,7 +862,7 @@ mod wayland {
 
             Some(Arc::new(Self {
                 connection,
-                presentation,
+                _registry: registry,
                 handle,
                 state,
                 pump,
@@ -927,6 +923,13 @@ mod wayland {
         }
     }
 
+    fn listen(connection: &Connection) -> (EventQueue<HubState>, WlRegistry) {
+        let queue = connection.new_event_queue::<HubState>();
+        let registry = connection.display().get_registry(&queue.handle(), ());
+        let _ = connection.flush();
+        (queue, registry)
+    }
+
     impl Drop for PresentationHub {
         fn drop(&mut self) {
             self.shutdown();
@@ -943,6 +946,9 @@ mod wayland {
     impl FeedbackRequester for HubRequester {
         fn request(&self, frame: SubmittedFrame) -> bool {
             let Some(hub) = self.hub.upgrade() else {
+                return false;
+            };
+            let Some(presentation) = hub.state.presentation.get() else {
                 return false;
             };
             if !self.surface.is_alive() {
@@ -975,7 +981,7 @@ mod wayland {
                 return false;
             };
             let callbacks = Arc::downgrade(&hub.state.callbacks);
-            let feedback = hub.presentation.feedback(
+            let feedback = presentation.feedback(
                 &self.surface,
                 &hub.handle,
                 FeedbackData {
@@ -1000,6 +1006,12 @@ mod wayland {
             }
         }
 
+        fn available(&self) -> bool {
+            self.hub
+                .upgrade()
+                .is_some_and(|hub| hub.state.presentation.get().is_some())
+        }
+
         fn cancel(&self, window_id: u64) {
             if let Some(hub) = self.hub.upgrade() {
                 let _ = hub.state.callbacks.cancel_window(window_id);
@@ -1007,18 +1019,31 @@ mod wayland {
         }
     }
 
-    impl Dispatch<wayland_client::protocol::wl_registry::WlRegistry, GlobalListContents> for HubState {
+    impl Dispatch<WlRegistry, ()> for HubState {
         fn event(
-            _state: &mut Self,
-            _proxy: &wayland_client::protocol::wl_registry::WlRegistry,
-            _event: wayland_client::protocol::wl_registry::Event,
-            _data: &GlobalListContents,
+            state: &mut Self,
+            registry: &WlRegistry,
+            event: wl_registry::Event,
+            _data: &(),
             _conn: &Connection,
-            _qh: &QueueHandle<Self>,
+            qh: &QueueHandle<Self>,
         ) {
             // The hub binds exactly one global and cares about no others. A
             // compositor that removes `wp_presentation` mid-session simply
             // stops answering, and pending frames abort on teardown.
+            if let wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } = event
+                && interface == WpPresentation::interface().name
+                && version >= 1
+                && state.shared.presentation.get().is_none()
+            {
+                let presentation =
+                    registry.bind::<WpPresentation, _, _>(name, version.min(2), qh, ());
+                let _ = state.shared.presentation.set(presentation);
+            }
         }
     }
 
@@ -1159,6 +1184,121 @@ mod wayland {
     mod tests {
         use super::*;
         use std::sync::atomic::AtomicUsize;
+
+        fn wire(object: u32, opcode: u16, args: &[u8]) -> Vec<u8> {
+            let size = u16::try_from(8 + args.len()).expect("a small message");
+            let mut message = object.to_ne_bytes().to_vec();
+            message.extend(((u32::from(size) << 16) | u32::from(opcode)).to_ne_bytes());
+            message.extend(args);
+            message
+        }
+
+        fn wire_string(text: &str) -> Vec<u8> {
+            let length = u32::try_from(text.len() + 1).expect("a short string");
+            let mut out = length.to_ne_bytes().to_vec();
+            out.extend(text.as_bytes());
+            out.push(0);
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
+            out
+        }
+
+        #[test]
+        fn the_hub_binds_from_the_announcement_without_a_roundtrip() {
+            use std::io::{Read, Write};
+            use std::os::unix::net::UnixStream;
+
+            let (client, mut compositor) = UnixStream::pair().expect("a socket pair");
+            compositor
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("a read timeout");
+            let connection = Connection::from_socket(client).expect("a client connection");
+
+            let (mut queue, _registry) = listen(&connection);
+            let mut request = [0u8; 12];
+            compositor.read_exact(&mut request).expect("get_registry");
+            let header = u32::from_ne_bytes(request[4..8].try_into().unwrap());
+            assert_eq!(u32::from_ne_bytes(request[0..4].try_into().unwrap()), 1);
+            assert_eq!(
+                (header & 0xffff, header >> 16),
+                (1, 12),
+                "only wl_display.get_registry, no sync"
+            );
+            let registry = u32::from_ne_bytes(request[8..12].try_into().unwrap());
+            compositor.set_nonblocking(true).expect("nonblocking");
+            let mut extra = [0u8; 1];
+            assert!(
+                matches!(compositor.read(&mut extra), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+                "no wl_display.sync or other request follows"
+            );
+            compositor.set_nonblocking(false).expect("blocking");
+
+            let shared = Arc::new(HubShared::default());
+            let mut state = HubState {
+                shared: Arc::clone(&shared),
+            };
+            let mut announce = 9u32.to_ne_bytes().to_vec();
+            announce.extend(wire_string("wl_compositor"));
+            announce.extend(6u32.to_ne_bytes());
+            compositor
+                .write_all(&wire(registry, 0, &announce))
+                .expect("a global");
+            let _ = queue.blocking_dispatch(&mut state).expect("dispatch");
+            assert!(
+                shared.presentation.get().is_none(),
+                "other globals are ignored"
+            );
+
+            let mut announce = 7u32.to_ne_bytes().to_vec();
+            announce.extend(wire_string("wp_presentation"));
+            announce.extend(2u32.to_ne_bytes());
+            compositor
+                .write_all(&wire(registry, 0, &announce))
+                .expect("the global");
+            let _ = queue.blocking_dispatch(&mut state).expect("dispatch");
+            assert!(shared.presentation.get().is_some());
+
+            // The guest reader flushes after running its pumps.
+            connection.flush().expect("flush the bind");
+            let mut bind = [0u8; 8];
+            compositor.read_exact(&mut bind).expect("bind header");
+            let header = u32::from_ne_bytes(bind[4..8].try_into().unwrap());
+            assert_eq!(
+                (
+                    u32::from_ne_bytes(bind[0..4].try_into().unwrap()),
+                    header & 0xffff
+                ),
+                (registry, 0)
+            );
+            let mut args = vec![0u8; (header >> 16) as usize - 8];
+            compositor.read_exact(&mut args).expect("bind arguments");
+            assert_eq!(u32::from_ne_bytes(args[0..4].try_into().unwrap()), 7);
+            assert_eq!(&args[8..23], b"wp_presentation");
+            assert_eq!(u32::from_ne_bytes(args[24..28].try_into().unwrap()), 2);
+        }
+
+        #[derive(Debug)]
+        struct Pending(AtomicBool);
+
+        impl FeedbackRequester for Pending {
+            fn request(&self, _frame: SubmittedFrame) -> bool {
+                panic!("no request before the protocol is available")
+            }
+
+            fn available(&self) -> bool {
+                self.0.load(Ordering::SeqCst)
+            }
+        }
+
+        #[test]
+        fn an_unbound_requester_behaves_as_no_protocol() {
+            let requester = Arc::new(Pending(AtomicBool::new(false)));
+            let presentation = WindowPresentation::new(3, Some(requester.clone()));
+            assert!(!presentation.has_protocol());
+            requester.0.store(true, Ordering::SeqCst);
+            assert!(presentation.has_protocol());
+        }
 
         struct DropProbe(Arc<AtomicUsize>);
 
