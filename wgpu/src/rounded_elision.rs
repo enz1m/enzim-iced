@@ -19,6 +19,17 @@ use crate::layer::{AlphaGroup, Layer};
 /// antialiasing could touch it, in logical pixels.
 const ARC_MARGIN: f32 = 0.75;
 
+pub(crate) fn covers_region(region: Rectangle, clip: Rectangle, radius: Radius) -> bool {
+    let guarded = Rectangle {
+        x: region.x - 1.0,
+        y: region.y - 1.0,
+        width: region.width + 2.0,
+        height: region.height + 2.0,
+    };
+    let corners = Corners::of(clip, radius);
+    guarded.is_within(&clip) && !(0..4).any(|corner| corners.intrudes(corner, guarded))
+}
+
 /// Whether the rounded clip `group` changes no pixel of `layers`, the layers
 /// painted inside it, compared with clipping each primitive by itself.
 pub(crate) fn is_redundant(layers: &[Layer], group: &AlphaGroup) -> bool {

@@ -66,6 +66,11 @@ pub trait Primitive: Debug + MaybeSend + MaybeSync + 'static {
         false
     }
 
+    /// Whether the primitive draws entirely in the supplied pass with source-over blending.
+    fn blends_source_over(&self) -> bool {
+        false
+    }
+
     /// Renders the [`Primitive`], using the given [`wgpu::CommandEncoder`].
     ///
     /// This will only be called if [`draw`](Self::draw) returns `false`.
@@ -111,6 +116,8 @@ pub(crate) trait Stored: Debug + MaybeSend + MaybeSync + 'static {
     fn draw(&self, storage: &Storage, render_pass: &mut wgpu::RenderPass<'_>) -> bool;
 
     fn paint(&self, bounds: &Rectangle, area: &mut dyn FnMut(u64, Rectangle)) -> bool;
+
+    fn blends_source_over(&self) -> bool;
 
     fn render(
         &self,
@@ -170,6 +177,10 @@ impl<P: Primitive> Stored for BlackBox<P> {
         };
         self.primitive
             .paint(bounds, &mut |signature, rect| area(signature ^ kind, rect))
+    }
+
+    fn blends_source_over(&self) -> bool {
+        self.primitive.blends_source_over()
     }
 
     fn render(

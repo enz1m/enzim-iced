@@ -366,6 +366,70 @@ fn group_clip_region(group: layer::AlphaGroup, scale: f32) -> clip::ClipRegion {
         })
 }
 
+// An opaque fill makes the group's backdrop irrelevant within the repaint.
+fn opaque_repaint_group(layers: &[Layer], repaint: Rectangle, scale: f32) -> Option<usize> {
+    let visible = |layer: &&Layer| !layer.is_empty() && repaint.intersects(&(layer.bounds * scale));
+    let group = layers
+        .iter()
+        .filter(visible)
+        .find_map(|layer| layer.alpha_groups.first().copied())?;
+    let (clip, radius) = group.clip?;
+    if group.alpha != 1.0
+        || group.scale != 1.0
+        || group.rotation != 0.0
+        || group.retained_clip.is_some()
+        || !rounded_elision::covers_region(repaint, clip * scale, radius * scale)
+    {
+        return None;
+    }
+    let mut opaque = false;
+    for layer in layers.iter().filter(visible) {
+        if !layer.materials.is_empty() || layer.clip_path.is_some() {
+            return None;
+        }
+        match layer.alpha_groups.as_slice() {
+            [] => continue,
+            [active] if active.id == group.id => {}
+            _ => return None,
+        }
+        if layer
+            .primitives
+            .iter()
+            .any(|instance| !instance.primitive.blends_source_over())
+        {
+            return None;
+        }
+        if !repaint.is_within(&(layer.bounds * scale))
+            || layer.clip_radius.is_some_and(|radius| {
+                !rounded_elision::covers_region(repaint, layer.bounds * scale, radius * scale)
+            })
+        {
+            continue;
+        }
+        opaque |= layer.quads.solids().any(|solid| {
+            let quad = solid.quad;
+            let bounds = Rectangle {
+                x: quad.position[0],
+                y: quad.position[1],
+                width: quad.size[0],
+                height: quad.size[1],
+            };
+            let [top_left, top_right, bottom_right, bottom_left] = quad.border_radius;
+            let radius = core::border::Radius {
+                top_left,
+                top_right,
+                bottom_right,
+                bottom_left,
+            };
+            solid.color.components()[3] == 1.0
+                && quad.border_width == 0.0
+                && quad.shadow_color.components()[3] == 0.0
+                && rounded_elision::covers_region(repaint, bounds * scale, radius * scale)
+        });
+    }
+    opaque.then_some(group.id)
+}
+
 #[derive(Default)]
 struct LayerScope {
     /// How many recorded nodes enclosed this scope when it opened: replay
@@ -2672,25 +2736,16 @@ impl Renderer {
         }
     }
 
-    /// Presents the frame into `target`, a surface texture whose content is
-    /// not kept: drawn into the canvas, in full or only where it changed,
-    /// then copied to `target`. A lane frame changed where its replay did; a
-    /// frame drawn by widgets where its layers differ from the last frame
-    /// presented.
+    /// Takes the last present's changed rectangles in physical pixels.
     ///
-    /// A frame is painted in full after a new scene, a resize, a new clear
-    /// color or an owned-layout replay, for a visible material (drawn by
-    /// widgets: one whose backdrop or paint it changed) or (drawn by
-    /// widgets) a custom primitive, or when the change covers half the
-    /// frame; otherwise only the layers that reach the changed rectangle are
-    /// painted, clipped to it, over the canvas.
-    /// enzUI: what the last [`Self::present_damaged`] frame changed, as
-    /// `[x, y, width, height]` rectangles in physical pixels; `None` for the
-    /// whole frame. Taken once.
+    /// `None` means the whole frame changed.
     pub fn take_present_damage(&mut self) -> Option<Vec<[u32; 4]>> {
         self.present_damage.take()
     }
 
+    /// Presents from a retained canvas, repainting damaged regions when supported.
+    ///
+    /// A new canvas or a change affecting a material's backdrop requires a full repaint.
     pub fn present_damaged(
         &mut self,
         clear_color: Color,
@@ -2798,11 +2853,29 @@ impl Renderer {
                             .collect(),
                     );
                 }
+                let frame_area = u64::from(size.width) * u64::from(size.height);
+                let skips_offscreen_group = || {
+                    let [region] = self.paint_regions.as_slice() else {
+                        return false;
+                    };
+                    let region = Rectangle::<f32>::from(*region);
+                    self.layers.iter().any(|layer| {
+                        !layer.is_empty()
+                            && layer.alpha_groups.first().is_some_and(|group| {
+                                group.scale == 1.0
+                                    && group.rotation == 0.0
+                                    && group.clip.is_some_and(|(bounds, _)| {
+                                        !region.intersects(&(bounds * scale))
+                                    })
+                            })
+                    })
+                };
                 if self.paint_regions.is_empty() {
                     damage::Damage::Nothing
                 } else if materials
                     || primitives
-                    || area * 2 > u64::from(size.width) * u64::from(size.height)
+                    || area >= frame_area
+                    || (area * 2 > frame_area && !skips_offscreen_group())
                 {
                     damage::Damage::Full
                 } else {
@@ -3579,14 +3652,16 @@ impl Renderer {
         viewport: &Viewport,
     ) {
         if self.paint_regions.is_empty() {
-            self.render(encoder, target, clear_color, viewport);
+            self.render(encoder, target, clear_color, viewport, false);
             return;
         }
         let prepared_within = self.clear_scissor;
         let regions = std::mem::take(&mut self.paint_regions);
+        // Region passes share alpha uniforms, so they must keep the same groups.
+        let single_region = regions.len() == 1;
         for region in &regions {
             self.clear_scissor = Some(*region);
-            self.render(encoder, target, clear_color, viewport);
+            self.render(encoder, target, clear_color, viewport, single_region);
         }
         self.paint_regions = regions;
         self.clear_scissor = prepared_within;
@@ -3598,6 +3673,7 @@ impl Renderer {
         frame: &wgpu::TextureView,
         clear_color: Option<Color>,
         viewport: &Viewport,
+        single_region: bool,
     ) {
         use std::mem::ManuallyDrop;
 
@@ -3687,6 +3763,9 @@ impl Renderer {
         );
 
         let scale = Transformation::scale(scale_factor);
+        let direct_group = (single_region && self.window_mask.is_none())
+            .then(|| opaque_repaint_group(self.layers.as_slice(), physical_bounds, scale_factor))
+            .flatten();
         let mut active_alpha_groups: Vec<layer::AlphaGroup> = Vec::new();
         // Closed outermost clip groups still in the first target, composited
         // together later (enzUI-ICED #3406).
@@ -3696,9 +3775,52 @@ impl Renderer {
         let mut stale = false;
 
         for layer in self.layers.iter().filter(|layer| !layer.is_empty()) {
+            let groups = match layer.alpha_groups.as_slice() {
+                [group] if direct_group == Some(group.id) => &[][..],
+                groups => groups,
+            };
+            let painted = physical_bounds
+                .intersection(&(layer.bounds * scale_factor))
+                .and_then(|bounds| Some((bounds, nudge::snap(bounds)?)));
+            if painted.is_none() && self.clear_scissor.is_some() {
+                // Preparation keeps a slot for every layer visible on the full frame.
+                if physical_frame
+                    .intersection(&(layer.bounds * scale_factor))
+                    .and_then(nudge::snap)
+                    .is_some()
+                {
+                    quad_layer += usize::from(!layer.quads.is_empty());
+                    if !layer.triangles.is_empty() {
+                        mesh_layer += layer
+                            .triangles
+                            .iter()
+                            .filter(|item| matches!(item, triangle::Item::Group { .. }))
+                            .count();
+                        mesh_batch += 1;
+                    }
+                    #[cfg(any(feature = "svg", feature = "image"))]
+                    {
+                        image_layer += usize::from(!layer.images.is_empty());
+                    }
+                    text_layer += layer
+                        .text
+                        .iter()
+                        .filter(|item| matches!(item, text::Item::Group { .. }))
+                        .count();
+                }
+                if single_region
+                    && layer.materials.is_empty()
+                    && layer
+                        .alpha_groups
+                        .iter()
+                        .all(|group| group.scale == 1.0 && group.rotation == 0.0)
+                {
+                    continue;
+                }
+            }
             let common = active_alpha_groups
                 .iter()
-                .zip(&layer.alpha_groups)
+                .zip(groups)
                 .take_while(|(active, next)| active.id == next.id)
                 .count();
 
@@ -3706,8 +3828,7 @@ impl Renderer {
             // in-pass primitives draw into it; meshes and primitives that need
             // the encoder end and reopen it themselves. Each pass is two
             // command buffers in wgpu-core (enzUI-ICED #3244).
-            let change_target =
-                common != active_alpha_groups.len() || common != layer.alpha_groups.len();
+            let change_target = common != active_alpha_groups.len() || common != groups.len();
 
             // enzUI-ICED #3406: an outermost clip group closing straight into a
             // sibling clip group that overlaps no pending one keeps painting
@@ -3717,9 +3838,9 @@ impl Renderer {
                 && !stale
                 && common == 0
                 && active_alpha_groups.len() == 1
-                && layer.alpha_groups.len() == 1
+                && groups.len() == 1
                 && layer.materials.is_empty())
-            .then(|| (active_alpha_groups[0], layer.alpha_groups[0]))
+            .then(|| (active_alpha_groups[0], groups[0]))
             .filter(|(closing, opening)| {
                 batchable(*closing)
                     && batchable(*opening)
@@ -3731,7 +3852,7 @@ impl Renderer {
 
             // Paint between pending groups must not land on one of them: it
             // would be covered when they are composited after it.
-            let extent = layer.alpha_groups.is_empty().then(|| paint_extent(layer));
+            let extent = groups.is_empty().then(|| paint_extent(layer));
             let clear_of_pending =
                 |deferred: &[layer::AlphaGroup], extra: Option<layer::AlphaGroup>| {
                     layer.materials.is_empty()
@@ -3745,7 +3866,7 @@ impl Renderer {
 
             if !change_target
                 && !deferred.is_empty()
-                && layer.alpha_groups.is_empty()
+                && groups.is_empty()
                 && !clear_of_pending(&deferred, None)
             {
                 let _ = ManuallyDrop::into_inner(render_pass);
@@ -3803,11 +3924,11 @@ impl Renderer {
                     && active_alpha_groups.is_empty()
                     && !deferred.is_empty()
                     && layer.materials.is_empty()
-                    && layer.alpha_groups.first().is_some_and(|opening| {
+                    && groups.first().is_some_and(|opening| {
                         batchable(*opening)
                             && deferred.iter().all(|pending| apart(*pending, *opening))
                     });
-                if !deferred.is_empty() && !reuse_first && !layer.alpha_groups.is_empty() {
+                if !deferred.is_empty() && !reuse_first && !groups.is_empty() {
                     self.alpha.composite_batch(
                         &self.engine.device,
                         &self.engine.queue,
@@ -3866,7 +3987,7 @@ impl Renderer {
                     }
                 }
 
-                let opened = &layer.alpha_groups[common..];
+                let opened = &groups[common..];
                 for (index, &group) in opened.iter().enumerate() {
                     let depth = active_alpha_groups.len();
                     if reuse_first && index == 0 {
@@ -3989,38 +4110,7 @@ impl Renderer {
                 self.material.draw_composites(&mut render_pass);
             }
 
-            let Some((physical_bounds, scissor_rect)) = physical_bounds
-                .intersection(&(layer.bounds * scale_factor))
-                .and_then(|bounds| Some((bounds, nudge::snap(bounds)?)))
-            else {
-                // A layer outside this region of a partial frame was prepared
-                // all the same: its slots are passed over, so the layers
-                // after it draw their own (enzUI-ICED #3666).
-                if self.clear_scissor.is_some()
-                    && physical_frame
-                        .intersection(&(layer.bounds * scale_factor))
-                        .and_then(nudge::snap)
-                        .is_some()
-                {
-                    quad_layer += usize::from(!layer.quads.is_empty());
-                    if !layer.triangles.is_empty() {
-                        mesh_layer += layer
-                            .triangles
-                            .iter()
-                            .filter(|item| matches!(item, triangle::Item::Group { .. }))
-                            .count();
-                        mesh_batch += 1;
-                    }
-                    #[cfg(any(feature = "svg", feature = "image"))]
-                    {
-                        image_layer += usize::from(!layer.images.is_empty());
-                    }
-                    text_layer += layer
-                        .text
-                        .iter()
-                        .filter(|item| matches!(item, text::Item::Group { .. }))
-                        .count();
-                }
+            let Some((physical_bounds, scissor_rect)) = painted else {
                 continue;
             };
 

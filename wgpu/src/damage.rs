@@ -1373,45 +1373,42 @@ mod frames {
         );
     }
 
-    /// A custom primitive that tells what it paints is compared like any
-    /// other paint: a frame that moves a quad beside it, or changes what it
-    /// paints, is painted in part and matches a full paint; one that cannot
-    /// tell paints the frame in full.
-    ///
-    /// Sabotage: ignore `paint` in `Layer::hash_paint` (return `None` for
-    /// any primitive), or keep forcing a full frame for every primitive --
-    /// the partial count does not move; drop the primitive's areas from the
-    /// layer's elements -- a changed signature damages nothing.
+    use crate::primitive::{Pipeline, Primitive};
+
+    #[derive(Debug)]
+    struct Declared(Option<u64>);
+    struct Nothing;
+    impl Pipeline for Nothing {
+        fn new(_: &wgpu::Device, _: &wgpu::Queue, _: wgpu::TextureFormat) -> Self {
+            Nothing
+        }
+    }
+    impl Primitive for Declared {
+        type Pipeline = Nothing;
+        fn prepare(
+            &self,
+            _: &mut Nothing,
+            _: &wgpu::Device,
+            _: &wgpu::Queue,
+            _: &Rectangle,
+            _: &Viewport,
+        ) {
+        }
+        fn draw(&self, _: &Nothing, _: &mut wgpu::RenderPass<'_>) -> bool {
+            true
+        }
+        fn blends_source_over(&self) -> bool {
+            true
+        }
+        fn paint(&self, bounds: &Rectangle, area: &mut dyn FnMut(u64, Rectangle)) -> bool {
+            self.0.map(|signature| area(signature, *bounds)).is_some()
+        }
+    }
+
     #[test]
     fn a_primitive_that_tells_its_paint_is_painted_in_part() {
-        use crate::primitive::{Pipeline, Primitive, Renderer as _};
+        use crate::primitive::Renderer as _;
 
-        #[derive(Debug)]
-        struct Declared(Option<u64>);
-        struct Nothing;
-        impl Pipeline for Nothing {
-            fn new(_: &wgpu::Device, _: &wgpu::Queue, _: wgpu::TextureFormat) -> Self {
-                Nothing
-            }
-        }
-        impl Primitive for Declared {
-            type Pipeline = Nothing;
-            fn prepare(
-                &self,
-                _: &mut Nothing,
-                _: &wgpu::Device,
-                _: &wgpu::Queue,
-                _: &Rectangle,
-                _: &Viewport,
-            ) {
-            }
-            fn draw(&self, _: &Nothing, _: &mut wgpu::RenderPass<'_>) -> bool {
-                true
-            }
-            fn paint(&self, bounds: &Rectangle, area: &mut dyn FnMut(u64, Rectangle)) -> bool {
-                self.0.map(|signature| area(signature, *bounds)).is_some()
-            }
-        }
         fn frame(renderer: &mut Renderer, moved: f32, signature: Option<u64>) {
             renderer.reset(Rectangle::with_size(Size::new(
                 SIZE.width as f32,
@@ -2006,6 +2003,64 @@ mod frames {
             "a full frame kept {} regions to paint it by",
             window.paint_regions.len()
         );
+    }
+
+    #[test]
+    fn partial_repaints_skip_unchanged_groups_and_keep_rounded_edges() {
+        use crate::primitive::Renderer as _;
+
+        fn paint(renderer: &mut Renderer, body: f32, inset: f32, edge: f32) {
+            let window = Rectangle::with_size(Size::new(SIZE.width as f32, SIZE.height as f32));
+            renderer.reset(window);
+            quad(renderer, window, Color::from_rgb(0.11, 0.21, 0.31));
+
+            for (x, width, fill, corner) in [(8.0, 100.0, 0.35, 0.8), (120.0, 352.0, body, edge)] {
+                let panel = Rectangle::new(Point::new(x, 8.0), Size::new(width, 284.0));
+                renderer.start_layer_rounded(panel, 20.0.into());
+                quad(renderer, panel, Color::from_rgb(fill, 0.3, 0.55));
+                quad(
+                    renderer,
+                    Rectangle::new(panel.position(), Size::new(24.0, 24.0)),
+                    Color::from_rgba(corner, 0.4, 0.3, 0.6),
+                );
+                if x == 120.0 {
+                    let inner = Rectangle::new(Point::new(138.0, 48.0), Size::new(320.0, 196.0));
+                    quad(renderer, inner, Color::from_rgba(inset, 0.67, 0.31, 0.55));
+                    renderer.draw_primitive(inner, Declared(Some(1)));
+                }
+                renderer.end_layer();
+            }
+        }
+
+        let viewport = Viewport::with_physical_size(
+            SIZE,
+            renderer::Scale {
+                window: 1.0,
+                application: 1.0,
+            },
+        );
+        let mut partial = renderer();
+        partial.track_frame_damage(true);
+        let target = surface_texture(&partial);
+        paint(&mut partial, 0.4, 0.3, 0.8);
+        let _ = partial.present_damaged(Color::BLACK, &target, &viewport, false);
+        assert_eq!(partial.alpha_group_statistics().groups, 2);
+
+        for (frame, (inset, edge, groups)) in [(0.3, 0.8, 1), (0.7, 0.8, 0), (0.7, 0.3, 1)]
+            .into_iter()
+            .enumerate()
+        {
+            paint(&mut partial, 0.65, inset, edge);
+            let _ = partial.present_damaged(Color::BLACK, &target, &viewport, false);
+            assert_eq!(partial.partial_frames(), frame as u64 + 1);
+            assert_eq!(partial.alpha_group_statistics().groups, groups);
+
+            let mut full = renderer();
+            let reference = surface_texture(&full);
+            paint(&mut full, 0.65, inset, edge);
+            let _ = full.present_damaged(Color::BLACK, &reference, &viewport, false);
+            assert_eq!(read(&partial, &target), read(&full, &reference));
+        }
     }
 
     /// Round dots turned by moving them land where a composite turning
