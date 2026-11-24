@@ -100,4 +100,5 @@ recreate them with a full repaint on their next start.
 The system font index is read from cosmic-text's on-disk cache, and the
 process catalog starts building on a background thread when `iced_winit::run`
 begins. Shaped runs are shared across text buffers and age out after
-`SHAPE_RUN_FRAMES` rendered frames without reuse.
+`SHAPE_RUN_FRAMES` rendered frames without reuse. Keyed `fill_text` entries
+are laid out again without reshaping when only their bounds change.
