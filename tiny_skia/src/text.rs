@@ -180,6 +180,7 @@ impl Pipeline {
     pub fn trim_cache(&mut self) {
         self.cache.get_mut().trim();
         self.glyph_cache.trim();
+        font_system().write().expect("Write font system").trim();
     }
 }
 

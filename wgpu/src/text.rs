@@ -579,6 +579,7 @@ impl State {
     pub fn trim(&mut self) {
         self.cache.trim();
         self.storage.trim();
+        font_system().write().expect("Write font system").trim();
 
         self.prepare_layer = 0;
     }

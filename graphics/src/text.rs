@@ -468,6 +468,9 @@ pub fn prewarm_font_system() {
         });
 }
 
+/// The number of frames a shaped run stays cached without being reused.
+pub const SHAPE_RUN_FRAMES: u64 = 30;
+
 /// A set of system fonts.
 pub struct FontSystem {
     raw: cosmic_text::FontSystem,
@@ -479,6 +482,14 @@ impl FontSystem {
     /// Returns the raw [`cosmic_text::FontSystem`].
     pub fn raw(&mut self) -> &mut cosmic_text::FontSystem {
         &mut self.raw
+    }
+
+    /// Ages cached shaped runs by one frame, dropping those no text has
+    /// reused within the last [`SHAPE_RUN_FRAMES`] frames.
+    ///
+    /// Renderers call this once per presented frame.
+    pub fn trim(&mut self) {
+        self.raw.shape_run_cache.trim(SHAPE_RUN_FRAMES);
     }
 
     /// Loads a font from its bytes.
