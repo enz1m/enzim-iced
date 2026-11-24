@@ -1136,9 +1136,10 @@ dependencies = [
 [[package]]
 name = "cosmic-text"
 version = "0.19.0"
-source = "git+https://github.com/enz1m/enzim-cosmic-text.git?rev=ad474131e52c0fde5979f8def2889489b50a0480#ad474131e52c0fde5979f8def2889489b50a0480"
+source = "git+https://github.com/enz1m/enzim-cosmic-text.git?rev=901771a75d45ff282b9c0bf86ab3738287557e8f#901771a75d45ff282b9c0bf86ab3738287557e8f"
 dependencies = [
  "bitflags 2.13.1",
+ "fontconfig-parser",
  "fontdb",
  "harfrust",
  "libloading",
@@ -1262,7 +1263,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 [[package]]
 name = "cryoglyph"
 version = "0.1.0"
-source = "git+https://github.com/enz1m/enzim-cryoglyph.git?rev=0617a49e7b8a5c5c4cc572a3e98cda70ff1be89f#0617a49e7b8a5c5c4cc572a3e98cda70ff1be89f"
+source = "git+https://github.com/enz1m/enzim-cryoglyph.git?rev=8930a92a308485407a1246991bea8a2db8a79ad4#8930a92a308485407a1246991bea8a2db8a79ad4"
 dependencies = [
  "cosmic-text",
  "etagere",
@@ -3402,7 +3403,7 @@ checksum = "13d2233c9842d08cfe13f9eac96e207ca6a2ea10b80259ebe8ad0268be27d2af"
 [[package]]
 name = "naga"
 version = "30.0.2"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=798421e7ac9091704835a8a733adfa2d7134dafb#798421e7ac9091704835a8a733adfa2d7134dafb"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -3427,7 +3428,7 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.2"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=798421e7ac9091704835a8a733adfa2d7134dafb#798421e7ac9091704835a8a733adfa2d7134dafb"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
@@ -6790,7 +6791,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 [[package]]
 name = "wgpu"
 version = "30.0.2"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=798421e7ac9091704835a8a733adfa2d7134dafb#798421e7ac9091704835a8a733adfa2d7134dafb"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.1",
@@ -6819,7 +6820,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "30.0.2"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=798421e7ac9091704835a8a733adfa2d7134dafb#798421e7ac9091704835a8a733adfa2d7134dafb"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -6853,7 +6854,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-apple"
 version = "30.0.2"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=798421e7ac9091704835a8a733adfa2d7134dafb#798421e7ac9091704835a8a733adfa2d7134dafb"
 dependencies = [
  "wgpu-hal",
 ]
@@ -6861,7 +6862,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-emscripten"
 version = "30.0.2"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=798421e7ac9091704835a8a733adfa2d7134dafb#798421e7ac9091704835a8a733adfa2d7134dafb"
 dependencies = [
  "wgpu-hal",
 ]
@@ -6869,7 +6870,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-wasm"
 version = "30.0.2"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=798421e7ac9091704835a8a733adfa2d7134dafb#798421e7ac9091704835a8a733adfa2d7134dafb"
 dependencies = [
  "wgpu-hal",
 ]
@@ -6877,7 +6878,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
 version = "30.0.2"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=798421e7ac9091704835a8a733adfa2d7134dafb#798421e7ac9091704835a8a733adfa2d7134dafb"
 dependencies = [
  "wgpu-hal",
 ]
@@ -6885,7 +6886,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.2"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=798421e7ac9091704835a8a733adfa2d7134dafb#798421e7ac9091704835a8a733adfa2d7134dafb"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -6940,7 +6941,7 @@ dependencies = [
 [[package]]
 name = "wgpu-naga-bridge"
 version = "30.0.2"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=798421e7ac9091704835a8a733adfa2d7134dafb#798421e7ac9091704835a8a733adfa2d7134dafb"
 dependencies = [
  "naga",
  "wgpu-types",
@@ -6949,7 +6950,7 @@ dependencies = [
 [[package]]
 name = "wgpu-types"
 version = "30.0.2"
-source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=c62972c9be1326882c4b4f1939d8a2713e42d210#c62972c9be1326882c4b4f1939d8a2713e42d210"
+source = "git+https://github.com/enz1m/enzim-wgpu.git?rev=798421e7ac9091704835a8a733adfa2d7134dafb#798421e7ac9091704835a8a733adfa2d7134dafb"
 dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
