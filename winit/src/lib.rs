@@ -140,6 +140,8 @@ where
     use winit::event_loop::EventLoop;
 
     let boot_span = debug::boot();
+    #[cfg(not(target_arch = "wasm32"))]
+    graphics::text::prewarm_font_system();
     let settings = program.settings();
     let window_settings = program.window();
     #[cfg(target_os = "linux")]

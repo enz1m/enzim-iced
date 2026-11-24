@@ -94,3 +94,9 @@ GPU suballocation pools use 4 MiB blocks to limit unused capacity.
 Unused alpha-target levels age out after ten seconds when rendering resumes.
 Animation lanes release cached frame targets after ten idle seconds and
 recreate them with a full repaint on their next start.
+
+## Text startup and caching
+
+The system font index is read from cosmic-text's on-disk cache, and the
+process catalog starts building on a background thread when `iced_winit::run`
+begins.

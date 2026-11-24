@@ -401,6 +401,10 @@ pub fn font_system() -> &'static RwLock<FontSystem> {
         ))];
         #[cfg(feature = "fira-sans")]
         fonts.extend(embedded_fira_sans());
+        #[cfg(not(target_arch = "wasm32"))]
+        #[allow(unused_mut)]
+        let mut raw = cosmic_text::FontSystem::new_with_fonts_and_cache(fonts);
+        #[cfg(target_arch = "wasm32")]
         #[allow(unused_mut)]
         let mut raw = cosmic_text::FontSystem::new_with_fonts(fonts);
 
@@ -450,6 +454,18 @@ pub fn font_system() -> &'static RwLock<FontSystem> {
             version: Version::default(),
         })
     })
+}
+
+/// Builds the process font catalog on a background thread, so that font
+/// discovery overlaps window and GPU setup. Later [`font_system`] calls wait
+/// for it to finish.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn prewarm_font_system() {
+    let _ = std::thread::Builder::new()
+        .name("iced-font-system".into())
+        .spawn(|| {
+            let _ = font_system();
+        });
 }
 
 /// A set of system fonts.
