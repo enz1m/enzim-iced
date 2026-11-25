@@ -11,7 +11,8 @@
 //! [`scoped`] overrides them on one thread, for tests.
 
 use std::cell::RefCell;
-use std::sync::{PoisonError, RwLock};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{PoisonError, RwLock, RwLockWriteGuard};
 use std::time::Duration;
 
 /// The input preferences widgets follow.
@@ -87,6 +88,20 @@ impl Default for Preferences {
 }
 
 static CURRENT: RwLock<Preferences> = RwLock::new(Preferences::DEFAULT);
+static TEXT_RASTERIZATION: AtomicU8 =
+    AtomicU8::new(encode_text_rasterization(&Preferences::DEFAULT));
+
+const fn encode_text_rasterization(preferences: &Preferences) -> u8 {
+    const fn encode(value: Option<bool>) -> u8 {
+        match value {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        }
+    }
+
+    encode(preferences.text_hinting) | (encode(preferences.text_antialias) << 2)
+}
 
 thread_local! {
     static SCOPED: RefCell<Option<Preferences>> = const { RefCell::new(None) };
@@ -99,14 +114,43 @@ pub fn get() -> Preferences {
         .unwrap_or_else(|| *CURRENT.read().unwrap_or_else(PoisonError::into_inner))
 }
 
+/// Returns the hinting and antialiasing overrides in force on this thread.
+pub fn text_rasterization() -> (Option<bool>, Option<bool>) {
+    const fn decode(value: u8) -> Option<bool> {
+        match value {
+            1 => Some(false),
+            2 => Some(true),
+            _ => None,
+        }
+    }
+
+    SCOPED.with(|scoped| {
+        if let Some(preferences) = scoped.borrow().as_ref() {
+            return (preferences.text_hinting, preferences.text_antialias);
+        }
+
+        let encoded = TEXT_RASTERIZATION.load(Ordering::Relaxed);
+        (decode(encoded & 0b11), decode(encoded >> 2))
+    })
+}
+
 /// Replaces the process-wide preferences.
 pub fn set(preferences: Preferences) {
-    *CURRENT.write().unwrap_or_else(PoisonError::into_inner) = preferences;
+    update(|current| *current = preferences);
 }
 
 /// Changes the process-wide preferences in place.
 pub fn update(change: impl FnOnce(&mut Preferences)) {
-    change(&mut CURRENT.write().unwrap_or_else(PoisonError::into_inner));
+    struct PublishRasterization(RwLockWriteGuard<'static, Preferences>);
+
+    impl Drop for PublishRasterization {
+        fn drop(&mut self) {
+            TEXT_RASTERIZATION.store(encode_text_rasterization(&self.0), Ordering::Relaxed);
+        }
+    }
+
+    let mut current = PublishRasterization(CURRENT.write().unwrap_or_else(PoisonError::into_inner));
+    change(&mut current.0);
 }
 
 /// Runs `f` with [`get`] answering `preferences` on this thread.
@@ -120,4 +164,40 @@ pub fn scoped<R>(preferences: Preferences, f: impl FnOnce() -> R) -> R {
     }
     let _restore = Restore(SCOPED.with(|scoped| scoped.borrow_mut().replace(preferences)));
     f()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_rasterization_tracks_updates_and_scoped_overrides() {
+        let previous = get();
+        set(Preferences {
+            text_hinting: Some(false),
+            text_antialias: None,
+            ..previous
+        });
+        let initial = text_rasterization();
+
+        let (scoped_before, scoped_after) = scoped(
+            Preferences {
+                text_hinting: None,
+                text_antialias: Some(false),
+                ..previous
+            },
+            || {
+                let before = text_rasterization();
+                update(|preferences| preferences.text_antialias = Some(true));
+                (before, text_rasterization())
+            },
+        );
+        let updated = text_rasterization();
+        set(previous);
+
+        assert_eq!(initial, (Some(false), None));
+        assert_eq!(scoped_before, (None, Some(false)));
+        assert_eq!(scoped_after, scoped_before);
+        assert_eq!(updated, (Some(false), Some(true)));
+    }
 }

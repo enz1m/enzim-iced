@@ -342,6 +342,10 @@ fn fontconfig_family(generic: &cosmic_text::Family<'_>) -> Option<String> {
 /// antialiasing choice from [`preferences`](crate::core::preferences), or else fontconfig's
 /// configuration for the sans-serif family, or else both on.
 pub fn raster_preferences(preferences: &crate::core::preferences::Preferences) -> (bool, bool) {
+    resolve_raster_preferences(preferences.text_hinting, preferences.text_antialias)
+}
+
+fn resolve_raster_preferences(hinting: Option<bool>, antialias: Option<bool>) -> (bool, bool) {
     #[cfg(target_os = "linux")]
     let configured = {
         static FONTCONFIG: OnceLock<Option<cosmic_text::fontconfig::FontMatch>> = OnceLock::new();
@@ -359,8 +363,8 @@ pub fn raster_preferences(preferences: &crate::core::preferences::Preferences) -
     #[cfg(not(target_os = "linux"))]
     let configured = (None, None);
     (
-        preferences.text_hinting.or(configured.0).unwrap_or(true),
-        preferences.text_antialias.or(configured.1).unwrap_or(true),
+        hinting.or(configured.0).unwrap_or(true),
+        antialias.or(configured.1).unwrap_or(true),
     )
 }
 
@@ -391,7 +395,8 @@ fn embedded_fira_sans() -> [cosmic_text::fontdb::Source; 4] {
 pub fn font_system() -> &'static RwLock<FontSystem> {
     static FONT_SYSTEM: OnceLock<RwLock<FontSystem>> = OnceLock::new();
 
-    let (hinting, antialias) = raster_preferences(&crate::core::preferences::get());
+    let (hinting, antialias) = crate::core::preferences::text_rasterization();
+    let (hinting, antialias) = resolve_raster_preferences(hinting, antialias);
     cosmic_text::set_raster_preferences(hinting, antialias);
 
     FONT_SYSTEM.get_or_init(|| {

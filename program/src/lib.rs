@@ -19,6 +19,8 @@ use crate::futures::{Executor, Subscription};
 use crate::graphics::compositor;
 use crate::runtime::Task;
 
+use std::borrow::Cow;
+
 /// An interactive, native, cross-platform, multi-windowed application.
 ///
 /// A [`Program`] can execute asynchronous actions by returning a
@@ -58,32 +60,29 @@ pub trait Program: Sized {
     ) -> Element<'a, Self::Message, Self::Theme, Self::Renderer>;
 
     fn title(&self, _state: &Self::State, _window: window::Id) -> String {
-        let mut title = String::new();
+        let mut title = String::with_capacity(Self::name().len() + " - Iced".len());
 
-        for (i, part) in Self::name().split("_").enumerate() {
-            use std::borrow::Cow;
-
-            let part = match part {
-                "a" | "an" | "of" | "in" | "and" => Cow::Borrowed(part),
-                _ => {
-                    let mut part = part.to_owned();
-
-                    if let Some(first_letter) = part.get_mut(0..1) {
-                        first_letter.make_ascii_uppercase();
-                    }
-
-                    Cow::Owned(part)
-                }
-            };
-
+        for (i, part) in Self::name().split('_').enumerate() {
             if i > 0 {
                 title.push(' ');
             }
 
-            title.push_str(&part);
+            let start = title.len();
+            title.push_str(part);
+            if !matches!(part, "a" | "an" | "of" | "in" | "and")
+                && let Some(first_letter) = title.get_mut(start..start + 1)
+            {
+                first_letter.make_ascii_uppercase();
+            }
         }
 
-        format!("{title} - Iced")
+        title.push_str(" - Iced");
+        title
+    }
+
+    /// Returns the current window title, borrowing it when possible.
+    fn title_cow<'a>(&'a self, state: &'a Self::State, window: window::Id) -> Cow<'a, str> {
+        Cow::Owned(self.title(state, window))
     }
 
     fn subscription(&self, _state: &Self::State) -> Subscription<Self::Message> {
@@ -172,6 +171,11 @@ pub fn with_subscription<P: Program>(
         }
 
         #[inline]
+        fn title_cow<'a>(&'a self, state: &'a Self::State, window: window::Id) -> Cow<'a, str> {
+            self.program.title_cow(state, window)
+        }
+
+        #[inline]
         fn theme(&self, state: &Self::State, window: window::Id) -> Option<Self::Theme> {
             self.program.theme(state, window)
         }
@@ -244,6 +248,11 @@ pub fn with_style<P: Program>(
         }
 
         #[inline]
+        fn title_cow<'a>(&'a self, state: &'a Self::State, window: window::Id) -> Cow<'a, str> {
+            self.program.title_cow(state, window)
+        }
+
+        #[inline]
         fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
             self.program.update(state, message)
         }
@@ -300,6 +309,11 @@ pub fn with_executor<P: Program, E: Executor>(
         #[inline]
         fn title(&self, state: &Self::State, window: window::Id) -> String {
             self.program.title(state, window)
+        }
+
+        #[inline]
+        fn title_cow<'a>(&'a self, state: &'a Self::State, window: window::Id) -> Cow<'a, str> {
+            self.program.title_cow(state, window)
         }
 
         #[inline]
@@ -386,6 +400,11 @@ impl<P: Program> Instance<P> {
     #[inline]
     pub fn title(&self, window: window::Id) -> String {
         self.program.title(&self.state, window)
+    }
+
+    /// Returns the current window title, borrowing it when possible.
+    pub fn title_cow(&self, window: window::Id) -> Cow<'_, str> {
+        self.program.title_cow(&self.state, window)
     }
 
     /// Processes the given message and updates the [`Instance`].

@@ -3,7 +3,7 @@ use crate::{BoxFuture, MaybeSend};
 
 use futures::channel::mpsc;
 use futures::sink::{Sink, SinkExt};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use std::hash::{Hash, Hasher as _};
 
@@ -17,6 +17,7 @@ use std::hash::{Hash, Hasher as _};
 #[derive(Debug, Default)]
 pub struct Tracker {
     subscriptions: FxHashMap<u64, Execution>,
+    alive: FxHashSet<u64>,
 }
 
 #[derive(Debug)]
@@ -29,9 +30,7 @@ pub struct Execution {
 impl Tracker {
     /// Creates a new empty [`Tracker`].
     pub fn new() -> Self {
-        Self {
-            subscriptions: FxHashMap::default(),
-        }
+        Self::default()
     }
 
     /// Updates the [`Tracker`] with the given [`Subscription`].
@@ -65,7 +64,7 @@ impl Tracker {
         use futures::stream::StreamExt;
 
         let mut futures: Vec<BoxFuture<()>> = Vec::new();
-        let mut alive = std::collections::HashSet::new();
+        self.alive.clear();
 
         for recipe in recipes {
             let interest = recipe.interest();
@@ -77,7 +76,7 @@ impl Tracker {
                 hasher.finish()
             };
 
-            let _ = alive.insert(id);
+            let _ = self.alive.insert(id);
 
             if self.subscriptions.contains_key(&id) {
                 continue;
@@ -114,7 +113,7 @@ impl Tracker {
             futures.push(Box::pin(future));
         }
 
-        self.subscriptions.retain(|id, _| alive.contains(id));
+        self.subscriptions.retain(|id, _| self.alive.contains(id));
 
         futures
     }

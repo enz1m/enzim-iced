@@ -229,11 +229,11 @@ where
         window: &Window,
     ) {
         // Update window title
-        let new_title = program.title(window_id);
+        let new_title = program.title_cow(window_id);
 
         if self.title != new_title {
             window.set_title(&new_title);
-            self.title = new_title;
+            self.title = new_title.into_owned();
         }
 
         // Update scale factor

@@ -517,6 +517,11 @@ impl<P: Program> Program for Application<P> {
     }
 
     #[inline]
+    fn title_cow<'a>(&'a self, state: &'a Self::State, window: window::Id) -> Cow<'a, str> {
+        self.raw.title_cow(state, window)
+    }
+
+    #[inline]
     fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
         self.raw.subscription(state)
     }
@@ -591,12 +596,21 @@ impl<State, Message> IntoBoot<State, Message> for (State, Task<Message>) {
 pub trait TitleFn<State> {
     /// Produces the title of the [`Application`].
     fn title(&self, state: &State) -> String;
+
+    /// Returns the window title, borrowing it when possible.
+    fn title_cow<'a>(&'a self, state: &'a State) -> Cow<'a, str> {
+        Cow::Owned(self.title(state))
+    }
 }
 
 impl<State> TitleFn<State> for &'static str {
     #[inline]
     fn title(&self, _state: &State) -> String {
         self.to_string()
+    }
+
+    fn title_cow<'a>(&'a self, _state: &'a State) -> Cow<'a, str> {
+        Cow::Borrowed(self)
     }
 }
 
@@ -722,6 +736,11 @@ fn with_title<P: Program>(
         }
 
         #[inline]
+        fn title_cow<'a>(&'a self, state: &'a Self::State, _window: window::Id) -> Cow<'a, str> {
+            self.title.title_cow(state)
+        }
+
+        #[inline]
         fn name() -> &'static str {
             P::name()
         }
@@ -830,6 +849,11 @@ fn with_theme<P: Program>(
         }
 
         #[inline]
+        fn title_cow<'a>(&'a self, state: &'a Self::State, window: window::Id) -> Cow<'a, str> {
+            self.program.title_cow(state, window)
+        }
+
+        #[inline]
         fn update(&self, state: &mut Self::State, message: Self::Message) -> Task<Self::Message> {
             self.program.update(state, message)
         }
@@ -886,6 +910,11 @@ fn with_scale_factor<P: Program>(
         #[inline]
         fn title(&self, state: &Self::State, window: window::Id) -> String {
             self.program.title(state, window)
+        }
+
+        #[inline]
+        fn title_cow<'a>(&'a self, state: &'a Self::State, window: window::Id) -> Cow<'a, str> {
+            self.program.title_cow(state, window)
         }
 
         #[inline]

@@ -336,6 +336,11 @@ impl<P: Program> Program for Daemon<P> {
     }
 
     #[inline]
+    fn title_cow<'a>(&'a self, state: &'a Self::State, window: window::Id) -> Cow<'a, str> {
+        self.raw.title_cow(state, window)
+    }
+
+    #[inline]
     fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
         self.raw.subscription(state)
     }
@@ -369,11 +374,20 @@ impl<P: Program> Program for Daemon<P> {
 pub trait TitleFn<State> {
     /// Produces the title of the [`Daemon`].
     fn title(&self, state: &State, window: window::Id) -> String;
+
+    /// Returns the window title, borrowing it when possible.
+    fn title_cow<'a>(&'a self, state: &'a State, window: window::Id) -> Cow<'a, str> {
+        Cow::Owned(self.title(state, window))
+    }
 }
 
 impl<State> TitleFn<State> for &'static str {
     fn title(&self, _state: &State, _window: window::Id) -> String {
         self.to_string()
+    }
+
+    fn title_cow<'a>(&'a self, _state: &'a State, _window: window::Id) -> Cow<'a, str> {
+        Cow::Borrowed(self)
     }
 }
 
@@ -496,6 +510,11 @@ where
     }
 
     #[inline]
+    fn title_cow<'a>(&'a self, state: &'a Self::State, window: window::Id) -> Cow<'a, str> {
+        self.title.title_cow(state, window)
+    }
+
+    #[inline]
     fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
         self.program.subscription(state)
     }
@@ -572,6 +591,11 @@ where
     }
 
     #[inline]
+    fn title_cow<'a>(&'a self, state: &'a Self::State, window: window::Id) -> Cow<'a, str> {
+        self.program.title_cow(state, window)
+    }
+
+    #[inline]
     fn subscription(&self, state: &Self::State) -> Subscription<Self::Message> {
         self.program.subscription(state)
     }
@@ -645,6 +669,11 @@ where
     #[inline]
     fn title(&self, state: &Self::State, window: window::Id) -> String {
         self.program.title(state, window)
+    }
+
+    #[inline]
+    fn title_cow<'a>(&'a self, state: &'a Self::State, window: window::Id) -> Cow<'a, str> {
+        self.program.title_cow(state, window)
     }
 
     #[inline]
