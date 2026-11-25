@@ -117,13 +117,15 @@ impl Layer {
     /// Hashes what this layer paints (enzUI-ICED #3666).
     ///
     /// Returns a signature of everything but its primitives (its materials
-    /// included), `None` when its paint can change without a new recording
-    /// (a custom primitive that cannot tell what it paints, unflushed paint).
-    /// Calls `element` with each primitive's
+    /// included), and the same signature without how many primitives of
+    /// each kind it draws; `None` when its paint can change without a new
+    /// recording (a custom primitive that cannot tell what it paints,
+    /// unflushed paint). Calls `element` with each primitive's
     /// signature (`None` for text the recording does not own) and the
     /// rectangle it paints within, before the layer's clip and groups.
     ///
-    /// With `held`, a frame drawn by widgets rather than replayed: what is
+    /// With `held`, a frame drawn by widgets rather than replayed: each
+    /// visible line of a widget's editor is a primitive, and what is
     /// hashed by address (a widget's paragraph, a clip path) is kept in
     /// `held`, so the address is not reused while the frame is compared.
     pub(crate) fn hash_paint(
@@ -131,7 +133,7 @@ impl Layer {
         state: &mut PaintHasher,
         mut held: Option<&mut Held>,
         mut element: impl FnMut(Option<u64>, Rectangle),
-    ) -> Option<u64> {
+    ) -> Option<(u64, u64)> {
         let Self {
             clip_path,
             bounds,
@@ -232,21 +234,29 @@ impl Layer {
         state.usize(*alpha_segment);
         state.usize(*fixed_layout_quads);
 
-        quads.hash_order(state);
+        // Counts go to `shape`: a layer whose primitives are drawn in the
+        // order they are listed can be compared by its unchanged runs of
+        // primitives when only how many it draws changes.
+        let mut shape = PaintHasher::default();
+        if quads.draws_in_element_order() {
+            quads.hash_order(&mut shape);
+        } else {
+            quads.hash_order(state);
+        }
         for (bytes, quad) in quads.elements() {
             let mut hash = PaintHasher::default();
             hash.bytes(bytes);
             element(Some(hash.finish()), quad_reach(quad));
         }
 
-        state.usize(triangles.len());
+        shape.usize(triangles.len());
         for item in triangles {
             match item {
                 triangle::Item::Group {
                     transformation,
                     meshes,
                 } => {
-                    state.usize(meshes.len());
+                    shape.usize(meshes.len());
                     for mesh in meshes {
                         let mut hash = PaintHasher::default();
                         hash.transformation(*transformation);
@@ -276,7 +286,7 @@ impl Layer {
 
         #[cfg(any(feature = "image", feature = "svg"))]
         {
-            state.usize(images.len());
+            shape.usize(images.len());
             for image in images {
                 let mut hash = PaintHasher::default();
                 hash_image(&mut hash, image);
@@ -286,15 +296,22 @@ impl Layer {
         #[cfg(not(any(feature = "image", feature = "svg")))]
         let _ = images;
 
-        state.usize(text.len());
+        shape.usize(text.len());
         for item in text {
             match item {
                 text::Item::Group {
                     transformation,
                     text,
                 } => {
-                    state.usize(text.len());
+                    shape.usize(text.len());
                     for text in text {
+                        if held.is_some()
+                            && editor_lines(text, &mut |hash, rect| {
+                                element(Some(hash), rect * *transformation);
+                            })
+                        {
+                            continue;
+                        }
                         let mut hash = PaintHasher::default();
                         hash.transformation(*transformation);
                         let owned = hash_text(&mut hash, text, held.as_deref_mut());
@@ -317,7 +334,9 @@ impl Layer {
                 }
             }
         }
-        Some(state.finish())
+        let props = state.finish();
+        state.u64(shape.finish());
+        Some((state.finish(), props))
     }
 
     /// Turns and scales this layer's meshes by `rotation` and `scale` about
@@ -1626,6 +1645,80 @@ fn hash_mesh(state: &mut PaintHasher, mesh: &Mesh) {
             state.rectangle(*clip_bounds);
         }
     }
+}
+
+/// Logical pixels a glyph's raster may extend past its outline bounds:
+/// baseline rounding, hinting and coverage at the pixel edges.
+const GLYPH_RASTER_SLACK: f32 = 3.0;
+
+/// Emits a widget editor's visible lines as separate primitives, each
+/// signed by what it paints, so an edit damages only the lines it changes.
+/// Returns `false` for any other text, or an editor already dropped.
+fn editor_lines(text: &Text, element: &mut impl FnMut(u64, Rectangle)) -> bool {
+    use crate::core::text::Editor as _;
+
+    let Text::Editor {
+        editor,
+        position,
+        color,
+        clip_bounds,
+        transformation,
+    } = text
+    else {
+        return false;
+    };
+    let Some(editor) = editor.upgrade() else {
+        return false;
+    };
+    let buffer = editor.buffer();
+    let unit = editor.hint_factor().unwrap_or(1.0);
+    // Without the fonts, each line is taken to paint the whole editor.
+    let mut fonts = crate::graphics::text::font_system().try_write().ok();
+    for run in buffer.layout_runs() {
+        let mut hash = PaintHasher::default();
+        hash.usize(3);
+        hash.point(*position);
+        hash.color(*color);
+        hash.rectangle(*clip_bounds);
+        hash.transformation(*transformation);
+        hash.f32(unit);
+        hash.f32(buffer.scroll().horizontal);
+        hash.f32(run.line_y);
+        hash.f32(run.line_top);
+        hash.f32(run.line_height);
+        for glyph in run.glyphs {
+            hash.hash(&glyph.font_id);
+            hash.usize(usize::from(glyph.glyph_id));
+            hash.f32(glyph.font_size);
+            hash.usize(usize::from(glyph.font_weight.0));
+            hash.f32(glyph.x);
+            hash.f32(glyph.y);
+            hash.f32(glyph.w);
+            hash.f32(glyph.x_offset);
+            hash.f32(glyph.y_offset);
+            hash.usize(glyph.metadata);
+            hash.hash(&glyph.cache_key_flags);
+            hash.option(glyph.color_opt, |hash, color| hash.u64(u64::from(color.0)));
+        }
+        let span = fonts
+            .as_mut()
+            .and_then(|fonts| crate::graphics::text::reach::run_span(&run, fonts.raw()));
+        let painted = match span {
+            Some((top, bottom)) => Rectangle::new(
+                Point::new(clip_bounds.x, position.y + top / unit - GLYPH_RASTER_SLACK),
+                Size::new(
+                    clip_bounds.width,
+                    (bottom - top) / unit + 2.0 * GLYPH_RASTER_SLACK,
+                ),
+            )
+            .intersection(clip_bounds),
+            None => Some(*clip_bounds),
+        };
+        if let Some(painted) = painted {
+            element(hash.finish(), painted * *transformation);
+        }
+    }
+    true
 }
 
 /// Hashes a recorded text command; `false` for text the recording does not

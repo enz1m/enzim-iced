@@ -509,6 +509,9 @@ pub struct Renderer {
     /// What each frame drawn by widgets changed, when this renderer
     /// presents a window that keeps its last frame (enzUI-ICED #3669).
     frame_damage: Option<damage::FrameTracker>,
+    /// The physical region a partial frame paints, when nothing it prepares
+    /// is drawn again outside it.
+    prepare_cull: Option<Rectangle<u32>>,
     /// The damage [`unchanged_frame`](Renderer::unchanged_frame) measured
     /// for the frame about to be presented.
     frame_damage_ahead: Option<damage::Damage>,
@@ -1583,9 +1586,11 @@ impl Renderer {
         let layers = layers.as_slice();
         for layer in layers.get(from.min(layers.len())..).unwrap_or_default() {
             paint.restart();
-            let head = layer.hash_paint(paint, None, |hash, rect| {
-                damage.element(hash, land(layer, rect));
-            });
+            let head = layer
+                .hash_paint(paint, None, |hash, rect| {
+                    damage.element(hash, land(layer, rect));
+                })
+                .map(|(head, _)| head);
             damage.layer(head, damage_extent(layer));
         }
     }
@@ -2048,6 +2053,7 @@ impl Renderer {
             presentation_recording: None,
             damage: None,
             frame_damage: None,
+            prepare_cull: None,
             frame_damage_ahead: None,
             canvas: None,
             direct_target: None,
@@ -2985,12 +2991,16 @@ impl Renderer {
                 });
                 self.partial_frame = true;
                 self.partial_frames += 1;
+                if !whole {
+                    self.prepare_cull = self.clear_scissor;
+                }
                 let canvas = self.canvas.take().expect("the canvas was just made");
                 self.direct_target = Some(canvas.texture.clone());
                 let encoder = self.draw(Some(clear_color), &canvas.view, viewport);
                 self.direct_target = None;
                 self.canvas = Some(canvas);
                 self.clear_scissor = None;
+                self.prepare_cull = None;
                 self.partial_frame = false;
                 // Prepared for part of the stack only: a content-only frame
                 // draws its widgets again instead.
@@ -3633,6 +3643,12 @@ impl Renderer {
                     &layer.text,
                     layer.bounds,
                     Transformation::scale(scale_factor),
+                    self.prepare_cull.map(|cull| {
+                        Rectangle::new(
+                            Point::new(cull.x as f32, cull.y as f32),
+                            Size::new(cull.width as f32, cull.height as f32),
+                        )
+                    }),
                 );
 
                 prepare_span.finish();

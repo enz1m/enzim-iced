@@ -4,6 +4,7 @@ pub mod cache;
 pub mod editor;
 pub mod font_envelope;
 pub mod paragraph;
+pub mod reach;
 
 pub use cache::Cache;
 pub use editor::Editor;

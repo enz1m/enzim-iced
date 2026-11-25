@@ -233,6 +233,7 @@ impl Storage {
                             bounds,
                             new_transformation,
                             owned_fonts,
+                            None,
                         );
                     }
 
@@ -270,6 +271,7 @@ impl Storage {
                         bounds,
                         new_transformation,
                         owned_fonts,
+                        None,
                     );
                 }
 
@@ -450,6 +452,7 @@ impl State {
         batch: &Batch,
         layer_bounds: Rectangle,
         layer_transformation: Transformation,
+        cull: Option<Rectangle>,
     ) {
         let mut atlas = pipeline.atlas.write().expect("Write to text atlas");
         let maximum = pipeline.maximum.load(atomic::Ordering::Relaxed);
@@ -483,6 +486,7 @@ impl State {
                         layer_bounds * layer_transformation,
                         layer_transformation * *transformation,
                         self.raster_fonts.as_mut().map(|fonts| &mut fonts.system),
+                        cull,
                     );
 
                     match result {
@@ -597,6 +601,7 @@ fn prepare(
     layer_bounds: Rectangle,
     layer_transformation: Transformation,
     owned_fonts: Option<&mut cryoglyph::FontSystem>,
+    cull: Option<Rectangle>,
 ) -> Result<(), cryoglyph::PrepareError> {
     let mut shared;
     let font_system = match owned_fonts {
@@ -798,7 +803,7 @@ fn prepare(
                 scale /= hint_factor;
             }
 
-            Some(cryoglyph::TextArea {
+            let area = cryoglyph::TextArea {
                 text: buffer.layout_runs(),
                 left: position.x,
                 top: position.y,
@@ -810,8 +815,28 @@ fn prepare(
                     bottom: (clip_bounds.y + clip_bounds.height) as i32,
                 },
                 default_color: to_color(color),
-            })
+            };
+            Some((area, buffer))
         });
+
+    let Some(cull) = cull else {
+        return renderer.prepare(
+            device,
+            queue,
+            encoder,
+            font_system,
+            atlas,
+            viewport,
+            text_areas.map(|(area, _)| area),
+            &mut cryoglyph::SwashCache::new(),
+        );
+    };
+    let culled: Vec<_> = text_areas
+        .filter_map(|(mut area, buffer)| {
+            area.bounds = cull_bounds(area.bounds, cull, buffer, area.scale, font_system)?;
+            Some(area)
+        })
+        .collect();
 
     renderer.prepare(
         device,
@@ -820,9 +845,45 @@ fn prepare(
         font_system,
         atlas,
         viewport,
-        text_areas,
+        culled,
         &mut cryoglyph::SwashCache::new(),
     )
+}
+
+/// Physical pixels a glyph's raster may extend past its outline bounds.
+const GLYPH_RASTER_SLACK: f32 = 3.0;
+
+/// Cuts a text area's bounds to `cull` (physical pixels), keeping every line
+/// whose glyphs can paint into it; `None` when none can.
+///
+/// The renderer skips a line whose line box is outside the bounds, so they
+/// grow by the farthest any glyph reaches past its line box.
+fn cull_bounds(
+    bounds: cryoglyph::TextBounds,
+    cull: Rectangle,
+    buffer: &cryoglyph::Buffer,
+    scale: f32,
+    fonts: &mut cryoglyph::FontSystem,
+) -> Option<cryoglyph::TextBounds> {
+    let mut overhang: f32 = 0.0;
+    for run in buffer.layout_runs() {
+        let Some((top, bottom)) = crate::graphics::text::reach::run_span(&run, fonts) else {
+            return Some(bounds);
+        };
+        overhang = overhang
+            .max(run.line_top - top)
+            .max(bottom - (run.line_top + run.line_height));
+    }
+    let reach = (overhang * scale + GLYPH_RASTER_SLACK).ceil();
+    let cut = cryoglyph::TextBounds {
+        left: bounds.left.max(cull.x.floor() as i32),
+        top: bounds.top.max((cull.y - reach).floor() as i32),
+        right: bounds.right.min((cull.x + cull.width).ceil() as i32),
+        bottom: bounds
+            .bottom
+            .min((cull.y + cull.height + reach).ceil() as i32),
+    };
+    (cut.left < cut.right && cut.top < cut.bottom).then_some(cut)
 }
 
 #[cfg(test)]

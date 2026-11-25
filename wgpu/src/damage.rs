@@ -202,6 +202,9 @@ impl PaintHasher {
 #[derive(Debug, Default)]
 struct LayerEntry {
     head: Option<u64>,
+    /// The signature without how many primitives of each kind it draws,
+    /// for a layer drawing its primitives in the order listed.
+    props: Option<u64>,
     extent: Option<Rectangle>,
     elements: Vec<(Option<u64>, Option<Rectangle>)>,
 }
@@ -230,19 +233,50 @@ impl SegmentEntry {
             return;
         }
         for (before, after) in was.layers.iter().zip(&self.layers) {
-            if before.head.is_none()
-                || before.head != after.head
-                || before.elements.len() != after.elements.len()
-            {
+            let same_head = before.head.is_some() && before.head == after.head;
+            // Primitives drawn in the order listed paint the same pixels
+            // outside the ones that differ, however many there are.
+            let same_props = before.props.is_some() && before.props == after.props;
+            if !same_head && !same_props {
                 add(before.extent);
                 add(after.extent);
                 continue;
             }
-            for (was, is) in before.elements.iter().zip(&after.elements) {
-                if was.0.is_none() || was != is {
-                    add(was.1);
-                    add(is.1);
+            if before.elements.len() == after.elements.len() {
+                for (was, is) in before.elements.iter().zip(&after.elements) {
+                    if was.0.is_none() || was != is {
+                        add(was.1);
+                        add(is.1);
+                    }
                 }
+                continue;
+            }
+            if same_head {
+                add(before.extent);
+                add(after.extent);
+                continue;
+            }
+            let unchanged = |was: &(Option<u64>, Option<Rectangle>),
+                             is: &(Option<u64>, Option<Rectangle>)| {
+                was.0.is_some() && was == is
+            };
+            let prefix = before
+                .elements
+                .iter()
+                .zip(&after.elements)
+                .take_while(|(was, is)| unchanged(was, is))
+                .count();
+            let suffix = before.elements[prefix..]
+                .iter()
+                .rev()
+                .zip(after.elements[prefix..].iter().rev())
+                .take_while(|(was, is)| unchanged(was, is))
+                .count();
+            for element in &before.elements[prefix..before.elements.len() - suffix] {
+                add(element.1);
+            }
+            for element in &after.elements[prefix..after.elements.len() - suffix] {
+                add(element.1);
             }
         }
     }
@@ -365,6 +399,7 @@ impl Tracker {
     pub(crate) fn layer(&mut self, signature: Option<u64>, extent: Option<Rectangle>) {
         let entry = LayerEntry {
             head: signature,
+            props: None,
             extent,
             elements: std::mem::take(&mut self.elements),
         };
@@ -512,11 +547,12 @@ impl FrameTracker {
         for layer in layers {
             paint.restart();
             elements.clear();
-            let head = layer.hash_paint(&mut paint, Some(&mut held[1]), |hash, rect| {
+            let hashed = layer.hash_paint(&mut paint, Some(&mut held[1]), |hash, rect| {
                 elements.push((hash, land(layer, rect)));
             });
             current.layers.push(LayerEntry {
-                head,
+                head: hashed.map(|(head, _)| head),
+                props: hashed.map(|(_, props)| props),
                 extent: extent(layer),
                 elements: std::mem::take(elements),
             });
@@ -683,6 +719,58 @@ mod tests {
         let _ = page(&mut tracker, 2);
         assert_eq!(page(&mut tracker, 2), Damage::Nothing);
         assert_eq!(page(&mut tracker, 1), regions(&[(0.0, 10.0), (50.0, 10.0)]));
+    }
+
+    /// A layer drawing its primitives in the order listed is damaged only
+    /// where primitives were added or removed; one without that order, or
+    /// with other properties, is damaged whole.
+    ///
+    /// Sabotage: damage only the added primitive when the layer's
+    /// properties changed -- its other primitives keep their old paint.
+    #[test]
+    fn a_primitive_added_to_an_ordered_layer_damages_only_it() {
+        let layer = |props: Option<u64>, head: u64, tiles: &[(u64, f32)]| SegmentEntry {
+            key: 0,
+            layers: vec![LayerEntry {
+                head: Some(head),
+                props,
+                extent: Some(Rectangle::new(Point::ORIGIN, Size::new(400.0, 10.0))),
+                elements: tiles
+                    .iter()
+                    .map(|(paint, at)| (Some(*paint), rect(*at, 0.0)))
+                    .collect(),
+            }],
+        };
+        let damage = |was: &SegmentEntry, is: &SegmentEntry| {
+            let mut changed = Vec::new();
+            is.compare(was, &mut |extent| changed.extend(extent));
+            Regions::cover(changed).map_or(Damage::Nothing, Damage::Region)
+        };
+        let was = layer(Some(7), 1, &[(1, 0.0), (2, 100.0), (3, 200.0)]);
+        let added = layer(Some(7), 2, &[(1, 0.0), (9, 50.0), (2, 100.0), (3, 200.0)]);
+        assert_eq!(damage(&was, &added), region(50.0, 10.0), "the added tile");
+        assert_eq!(damage(&added, &was), region(50.0, 10.0), "the removed tile");
+        let moved = layer(Some(7), 3, &[(1, 0.0), (2, 100.0), (3, 210.0), (4, 300.0)]);
+        assert_eq!(
+            damage(&was, &moved),
+            regions(&[(200.0, 20.0), (300.0, 10.0)]),
+            "the moved tile, where it was and is, and the added one"
+        );
+        let restyled = layer(Some(8), 2, &[(1, 0.0), (9, 50.0), (2, 100.0), (3, 200.0)]);
+        assert_eq!(
+            damage(&was, &restyled),
+            region(0.0, 400.0),
+            "other properties"
+        );
+        let unordered = layer(None, 2, &[(1, 0.0), (9, 50.0), (2, 100.0), (3, 200.0)]);
+        assert_eq!(
+            damage(
+                &layer(None, 1, &[(1, 0.0), (2, 100.0), (3, 200.0)]),
+                &unordered
+            ),
+            region(0.0, 400.0),
+            "drawn in another order than listed"
+        );
     }
 
     /// Changes that nearly touch are painted as one rectangle; far apart,
@@ -866,6 +954,9 @@ impl Canvas {
             && self.scale.to_bits() == scale.to_bits()
     }
 }
+
+#[cfg(test)]
+mod editor_frames;
 
 #[cfg(test)]
 mod frames {

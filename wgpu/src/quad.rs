@@ -562,6 +562,11 @@ impl Batch {
         }
     }
 
+    /// Whether the batch draws its quads in the order [`Self::elements`] lists them.
+    pub(crate) fn draws_in_element_order(&self) -> bool {
+        self.gradients.is_empty()
+    }
+
     /// Each quad's instance bytes and geometry, solids first.
     pub(crate) fn elements(&self) -> impl Iterator<Item = (&[u8], &Quad)> {
         self.solids
