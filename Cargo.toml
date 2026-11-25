@@ -223,8 +223,8 @@ bitflags = "2.0"
 bytemuck = { version = "1.0", features = ["derive"] }
 bytes = "1.6"
 cargo-hot = { version = "0.1", package = "cargo-hot-protocol" }
-cosmic-text = { git = "https://github.com/enz1m/enzim-cosmic-text.git", rev = "901771a75d45ff282b9c0bf86ab3738287557e8f", version = "0.19" }
-cryoglyph = { git = "https://github.com/enz1m/enzim-cryoglyph.git", rev = "8930a92a308485407a1246991bea8a2db8a79ad4" }
+cosmic-text = { git = "https://github.com/enz1m/enzim-cosmic-text.git", rev = "739e9d9e469e6f943a3eea233b6dc77ae3832ab5", version = "0.19" }
+cryoglyph = { git = "https://github.com/enz1m/enzim-cryoglyph.git", rev = "bd2494fbd903f9cfac4c5b3065ff216850c0c5d3" }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 glam = "0.33.2"
 guillotiere = "0.6"

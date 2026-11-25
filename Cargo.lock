@@ -1136,7 +1136,7 @@ dependencies = [
 [[package]]
 name = "cosmic-text"
 version = "0.19.0"
-source = "git+https://github.com/enz1m/enzim-cosmic-text.git?rev=901771a75d45ff282b9c0bf86ab3738287557e8f#901771a75d45ff282b9c0bf86ab3738287557e8f"
+source = "git+https://github.com/enz1m/enzim-cosmic-text.git?rev=739e9d9e469e6f943a3eea233b6dc77ae3832ab5#739e9d9e469e6f943a3eea233b6dc77ae3832ab5"
 dependencies = [
  "bitflags 2.13.1",
  "fontconfig-parser",
@@ -1154,6 +1154,7 @@ dependencies = [
  "sys-locale",
  "unicode-bidi",
  "unicode-linebreak",
+ "unicode-normalization",
  "unicode-script",
  "unicode-segmentation",
 ]
@@ -1263,7 +1264,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 [[package]]
 name = "cryoglyph"
 version = "0.1.0"
-source = "git+https://github.com/enz1m/enzim-cryoglyph.git?rev=8930a92a308485407a1246991bea8a2db8a79ad4#8930a92a308485407a1246991bea8a2db8a79ad4"
+source = "git+https://github.com/enz1m/enzim-cryoglyph.git?rev=bd2494fbd903f9cfac4c5b3065ff216850c0c5d3#bd2494fbd903f9cfac4c5b3065ff216850c0c5d3"
 dependencies = [
  "cosmic-text",
  "etagere",
@@ -6285,6 +6286,15 @@ name = "unicode-linebreak"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-script"
