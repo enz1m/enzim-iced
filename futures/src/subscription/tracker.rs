@@ -1,4 +1,4 @@
-use crate::subscription::{Event, Hasher, Interest, Recipe};
+use crate::subscription::{Event, Hasher, Interest, Listener, Recipe};
 use crate::{BoxFuture, MaybeSend};
 
 use futures::channel::mpsc;
@@ -22,7 +22,7 @@ pub struct Tracker {
 #[derive(Debug)]
 pub struct Execution {
     _cancel: futures::channel::oneshot::Sender<()>,
-    listener: Option<futures::channel::mpsc::Sender<Event>>,
+    listener: Option<Listener>,
     interest: Interest,
 }
 
@@ -85,11 +85,8 @@ impl Tracker {
 
             let (cancel, mut canceled) = futures::channel::oneshot::channel();
 
-            // TODO: Use bus if/when it supports async
-            let (event_sender, event_receiver) = futures::channel::mpsc::channel(100);
-
             let mut receiver = receiver.clone();
-            let mut stream = recipe.stream(event_receiver.boxed());
+            let (mut stream, listener) = recipe.prepare();
 
             let future = async move {
                 loop {
@@ -109,11 +106,7 @@ impl Tracker {
                 id,
                 Execution {
                     _cancel: cancel,
-                    listener: if event_sender.is_closed() || interest == Interest::NONE {
-                        None
-                    } else {
-                        Some(event_sender)
-                    },
+                    listener,
                     interest,
                 },
             );
@@ -144,7 +137,7 @@ impl Tracker {
             .filter(|connection| connection.interest.0 & kind.0 != 0)
             .filter_map(|connection| connection.listener.as_mut())
             .for_each(|listener| {
-                if let Err(error) = listener.try_send(event.clone()) {
+                if let Err(error) = listener.dispatch(event.clone()) {
                     log::warn!("Error sending event to subscription: {error:?}");
                 }
             });

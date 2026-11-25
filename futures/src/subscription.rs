@@ -8,6 +8,8 @@ use crate::core::event;
 use crate::core::theme;
 use crate::core::window;
 use crate::futures::Stream;
+use crate::futures::channel::mpsc;
+use crate::futures::stream::{self, StreamExt};
 use crate::{BoxStream, MaybeSend};
 
 use std::any::TypeId;
@@ -288,6 +290,15 @@ impl<T> Subscription<T> {
             fn interest(&self) -> Interest {
                 self.recipe.interest()
             }
+
+            fn prepare(self: Box<Self>) -> Prepared<Self::Output> {
+                let (stream, listener) = self.recipe.prepare();
+                let value = self.value;
+                (
+                    crate::boxed_stream(stream.map(move |element| (value.clone(), element))),
+                    listener,
+                )
+            }
         }
 
         Subscription {
@@ -346,6 +357,11 @@ impl<T> Subscription<T> {
 
             fn interest(&self) -> Interest {
                 self.recipe.interest()
+            }
+
+            fn prepare(self: Box<Self>) -> Prepared<Self::Output> {
+                let (stream, listener) = self.recipe.prepare();
+                (crate::boxed_stream(stream.map(self.mapper)), listener)
             }
         }
 
@@ -413,6 +429,17 @@ impl<T> Subscription<T> {
 
             fn interest(&self) -> Interest {
                 self.recipe.interest()
+            }
+
+            fn prepare(self: Box<Self>) -> Prepared<Self::Output> {
+                let (stream, listener) = self.recipe.prepare();
+                let mapper = self.mapper;
+                (
+                    crate::boxed_stream(
+                        stream.filter_map(move |output| futures::future::ready(mapper(output))),
+                    ),
+                    listener,
+                )
             }
         }
 
@@ -485,6 +512,48 @@ pub trait Recipe {
     /// restarts the subscription.
     fn interest(&self) -> Interest {
         Interest::ALL
+    }
+
+    #[doc(hidden)]
+    fn prepare(self: Box<Self>) -> Prepared<Self::Output> {
+        if self.interest() == Interest::NONE {
+            return (self.stream(crate::boxed_stream(stream::empty())), None);
+        }
+
+        let (mut sender, receiver) = mpsc::channel(100);
+        let stream = self.stream(crate::boxed_stream(receiver));
+        let listener = (!sender.is_closed()).then(|| {
+            Listener(Box::new(move |event| {
+                sender
+                    .try_send(event)
+                    .map_err(mpsc::TrySendError::into_send_error)
+            }))
+        });
+        (stream, listener)
+    }
+}
+
+// Recipe wrappers transform output without moving their mappers onto the broadcast thread.
+#[doc(hidden)]
+pub type Prepared<T> = (BoxStream<T>, Option<Listener>);
+
+#[cfg(not(target_arch = "wasm32"))]
+type Dispatch = dyn FnMut(Event) -> Result<(), mpsc::SendError> + Send;
+#[cfg(target_arch = "wasm32")]
+type Dispatch = dyn FnMut(Event) -> Result<(), mpsc::SendError>;
+
+#[doc(hidden)]
+pub struct Listener(Box<Dispatch>);
+
+impl Listener {
+    fn dispatch(&mut self, event: Event) -> Result<(), mpsc::SendError> {
+        (self.0)(event)
+    }
+}
+
+impl std::fmt::Debug for Listener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listener").finish_non_exhaustive()
     }
 }
 
@@ -573,6 +642,69 @@ where
     T: 'static + MaybeSend,
 {
     filter_map_with_interest(id, Interest::ALL, f)
+}
+
+pub(crate) fn filter_map_on_broadcast<I, F, T>(
+    data: I,
+    interest: Interest,
+    filter: F,
+) -> Subscription<T>
+where
+    I: Hash + 'static,
+    F: Fn(Event) -> Option<T> + MaybeSend + 'static,
+    T: MaybeSend + 'static,
+{
+    struct Filter<I, F> {
+        data: I,
+        interest: Interest,
+        filter: F,
+    }
+
+    impl<I, F, T> Recipe for Filter<I, F>
+    where
+        I: Hash + 'static,
+        F: Fn(Event) -> Option<T> + MaybeSend + 'static,
+        T: MaybeSend + 'static,
+    {
+        type Output = T;
+
+        fn hash(&self, state: &mut Hasher) {
+            TypeId::of::<I>().hash(state);
+            self.data.hash(state);
+        }
+
+        fn interest(&self) -> Interest {
+            self.interest
+        }
+
+        fn stream(self: Box<Self>, input: EventStream) -> BoxStream<T> {
+            let filter = self.filter;
+            crate::boxed_stream(
+                input.filter_map(move |event| futures::future::ready(filter(event))),
+            )
+        }
+
+        fn prepare(self: Box<Self>) -> Prepared<T> {
+            let (mut sender, receiver) = mpsc::channel(100);
+            let filter = self.filter;
+            let listener = Listener(Box::new(move |event| {
+                if let Some(message) = filter(event) {
+                    sender
+                        .try_send(message)
+                        .map_err(mpsc::TrySendError::into_send_error)?;
+                }
+                Ok(())
+            }));
+
+            (crate::boxed_stream(receiver), Some(listener))
+        }
+    }
+
+    from_recipe(Filter {
+        data,
+        interest,
+        filter,
+    })
 }
 
 struct Runner<I, F, S, T>

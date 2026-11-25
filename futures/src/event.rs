@@ -21,7 +21,8 @@ pub fn listen() -> Subscription<Event> {
 /// Creates a [`Subscription`] that listens and filters all the runtime events
 /// with the provided function, producing messages accordingly.
 ///
-/// The function receives each interaction except redraw requests. If the function:
+/// The function runs on the runtime's event thread for each interaction except
+/// redraw requests. Keep it short and avoid blocking I/O. If the function:
 ///
 /// - Returns `None`, the [`Event`] will be discarded.
 /// - Returns `Some` message, the `Message` will be produced.
@@ -46,7 +47,7 @@ where
     #[derive(Hash)]
     struct EventsWithInterest;
 
-    subscription::filter_map_with_interest(
+    subscription::filter_map_on_broadcast(
         (EventsWithInterest, f),
         interest.without(Interest::SYSTEM.union(Interest::REDRAWS)),
         move |event| match event {
@@ -110,4 +111,54 @@ pub fn listen_url() -> Subscription<String> {
             _ => None,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::futures::{channel::mpsc, task};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct Wakes(AtomicUsize);
+
+    impl task::ArcWake for Wakes {
+        fn wake_by_ref(arc_self: &Arc<Self>) {
+            let _ = arc_self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn only_matching_interactions_wake_the_listener_task() {
+        let window = window::Id::unique();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut tracker = subscription::Tracker::new();
+        let sub = listen_with(|event, _, _| matches!(event, Event::Keyboard(_)).then_some(()))
+            .with(window)
+            .map(|(_, ())| ());
+        let mut tasks = tracker.update(subscription::into_recipes(sub).into_iter(), sender);
+        let wakes = Arc::new(Wakes::default());
+        let waker = task::waker(Arc::clone(&wakes));
+        let mut context = task::Context::from_waker(&waker);
+        assert!(tasks[0].as_mut().poll(&mut context).is_pending());
+
+        for _ in 0..120 {
+            tracker.broadcast(subscription::Event::Interaction {
+                window,
+                event: Event::Mouse(crate::core::mouse::Event::CursorEntered),
+                status: event::Status::Ignored,
+            });
+        }
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
+
+        tracker.broadcast(subscription::Event::Interaction {
+            window,
+            event: Event::Keyboard(crate::core::keyboard::Event::CapsLockChanged(true)),
+            status: event::Status::Ignored,
+        });
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+        assert!(tasks[0].as_mut().poll(&mut context).is_pending());
+        assert_eq!(receiver.try_recv(), Ok(()));
+    }
 }

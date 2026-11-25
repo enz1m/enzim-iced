@@ -113,6 +113,6 @@ where
     ///
     /// [`Tracker::broadcast`]: subscription::Tracker::broadcast
     pub fn broadcast(&mut self, event: subscription::Event) {
-        self.subscriptions.broadcast(event);
+        self.executor.enter(|| self.subscriptions.broadcast(event));
     }
 }
