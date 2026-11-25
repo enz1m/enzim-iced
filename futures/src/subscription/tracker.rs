@@ -1,11 +1,11 @@
-use crate::subscription::{Event, Hasher, Recipe};
+use crate::subscription::{Event, Hasher, Interest, Recipe};
 use crate::{BoxFuture, MaybeSend};
 
 use futures::channel::mpsc;
 use futures::sink::{Sink, SinkExt};
 use rustc_hash::FxHashMap;
 
-use std::hash::Hasher as _;
+use std::hash::{Hash, Hasher as _};
 
 /// A registry of subscription streams.
 ///
@@ -23,6 +23,7 @@ pub struct Tracker {
 pub struct Execution {
     _cancel: futures::channel::oneshot::Sender<()>,
     listener: Option<futures::channel::mpsc::Sender<Event>>,
+    interest: Interest,
 }
 
 impl Tracker {
@@ -67,9 +68,11 @@ impl Tracker {
         let mut alive = std::collections::HashSet::new();
 
         for recipe in recipes {
+            let interest = recipe.interest();
             let id = {
                 let mut hasher = Hasher::default();
                 recipe.hash(&mut hasher);
+                interest.hash(&mut hasher);
 
                 hasher.finish()
             };
@@ -106,11 +109,12 @@ impl Tracker {
                 id,
                 Execution {
                     _cancel: cancel,
-                    listener: if event_sender.is_closed() {
+                    listener: if event_sender.is_closed() || interest == Interest::NONE {
                         None
                     } else {
                         Some(event_sender)
                     },
+                    interest,
                 },
             );
 
@@ -128,13 +132,16 @@ impl Tracker {
     /// as input. This stream can be used by some subscription to listen to
     /// shell events.
     ///
-    /// This method publishes the given event to all the subscription streams
-    /// currently open.
+    /// This method publishes the event to open subscriptions whose recipes
+    /// declare interest in its kind.
     ///
     /// [`Recipe::stream`]: crate::subscription::Recipe::stream
     pub fn broadcast(&mut self, event: Event) {
+        let kind = Interest::of(&event);
+
         self.subscriptions
             .values_mut()
+            .filter(|connection| connection.interest.0 & kind.0 != 0)
             .filter_map(|connection| connection.listener.as_mut())
             .for_each(|listener| {
                 if let Err(error) = listener.try_send(event.clone()) {

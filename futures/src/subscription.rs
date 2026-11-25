@@ -214,6 +214,7 @@ impl<T> Subscription<T> {
         from_recipe(Runner {
             data: builder,
             spawn: |builder, _| builder(),
+            interest: Interest::NONE,
         })
     }
 
@@ -231,6 +232,7 @@ impl<T> Subscription<T> {
         from_recipe(Runner {
             data: (data, builder),
             spawn: |(data, builder), _| builder(data),
+            interest: Interest::NONE,
         })
     }
 
@@ -281,6 +283,10 @@ impl<T> Subscription<T> {
                         .stream(input)
                         .map(move |element| (value.clone(), element)),
                 )
+            }
+
+            fn interest(&self) -> Interest {
+                self.recipe.interest()
             }
         }
 
@@ -336,6 +342,10 @@ impl<T> Subscription<T> {
                 use futures::StreamExt;
 
                 Box::pin(self.recipe.stream(input).map(self.mapper))
+            }
+
+            fn interest(&self) -> Interest {
+                self.recipe.interest()
             }
         }
 
@@ -399,6 +409,10 @@ impl<T> Subscription<T> {
                         .stream(input)
                         .filter_map(move |a| future::ready(mapper(a))),
                 )
+            }
+
+            fn interest(&self) -> Interest {
+                self.recipe.interest()
             }
         }
 
@@ -464,10 +478,76 @@ pub trait Recipe {
     /// Executes the [`Recipe`] and produces the stream of events of its
     /// [`Subscription`].
     fn stream(self: Box<Self>, input: EventStream) -> BoxStream<Self::Output>;
+
+    /// The kinds of [`Event`] the stream reads from its input.
+    ///
+    /// The runtime delivers every kind by default. Changing the interest
+    /// restarts the subscription.
+    fn interest(&self) -> Interest {
+        Interest::ALL
+    }
 }
 
-/// Creates a [`Subscription`] from a hashable id and a filter function.
-pub fn filter_map<I, F, T>(id: I, f: F) -> Subscription<T>
+/// A set of [`Event`] kinds a [`Recipe`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Interest(u8);
+
+impl Interest {
+    /// No event.
+    pub const NONE: Self = Self(0);
+    /// Redraw requests of every window.
+    pub const REDRAWS: Self = Self(1);
+    /// Window events other than redraw requests.
+    pub const WINDOW: Self = Self(1 << 1);
+    /// Keyboard events.
+    pub const KEYBOARD: Self = Self(1 << 2);
+    /// Mouse, touch, gesture and stylus events.
+    pub const POINTER: Self = Self(1 << 3);
+    /// System preference and platform-specific events.
+    pub const SYSTEM: Self = Self(1 << 4);
+    /// Input method, clipboard and wake events.
+    pub const OTHER: Self = Self(1 << 5);
+    /// Every event.
+    pub const ALL: Self = Self(0b11_1111);
+
+    /// Returns the union of both sets.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Returns this set without the kinds in `other`.
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// Returns whether this set contains the kind of `event`.
+    pub fn accepts(self, event: &Event) -> bool {
+        self.0 & Self::of(event).0 != 0
+    }
+
+    fn of(event: &Event) -> Self {
+        use crate::core::event::Event as Core;
+
+        match event {
+            Event::Interaction { event, .. } => match event {
+                Core::Window(window::Event::RedrawRequested(_)) => Self::REDRAWS,
+                Core::Window(_) => Self::WINDOW,
+                Core::Keyboard(_) => Self::KEYBOARD,
+                Core::Mouse(_) | Core::Touch(_) | Core::Gesture(_) | Core::Stylus(_) => {
+                    Self::POINTER
+                }
+                Core::InputMethod(_) | Core::Clipboard(_) | Core::Waken => Self::OTHER,
+            },
+            Event::SystemThemeChanged(_)
+            | Event::SystemReducedMotionChanged(_)
+            | Event::PlatformSpecific(_) => Self::SYSTEM,
+        }
+    }
+}
+
+/// Creates a [`Subscription`] from a hashable id and a filter function that
+/// reads only the given [`Interest`].
+pub fn filter_map_with_interest<I, F, T>(id: I, interest: Interest, f: F) -> Subscription<T>
 where
     I: Hash + 'static,
     F: Fn(Event) -> Option<T> + MaybeSend + 'static,
@@ -475,6 +555,7 @@ where
 {
     from_recipe(Runner {
         data: id,
+        interest,
         spawn: |_, events| {
             use futures::future;
             use futures::stream::StreamExt;
@@ -484,6 +565,16 @@ where
     })
 }
 
+/// Creates a [`Subscription`] from a hashable id and a filter function.
+pub fn filter_map<I, F, T>(id: I, f: F) -> Subscription<T>
+where
+    I: Hash + 'static,
+    F: Fn(Event) -> Option<T> + MaybeSend + 'static,
+    T: 'static + MaybeSend,
+{
+    filter_map_with_interest(id, Interest::ALL, f)
+}
+
 struct Runner<I, F, S, T>
 where
     F: FnOnce(&I, EventStream) -> S,
@@ -491,6 +582,7 @@ where
 {
     data: I,
     spawn: F,
+    interest: Interest,
 }
 
 impl<I, F, S, T> Recipe for Runner<I, F, S, T>
@@ -508,6 +600,10 @@ where
 
     fn stream(self: Box<Self>, input: EventStream) -> BoxStream<Self::Output> {
         crate::boxed_stream((self.spawn)(&self.data, input))
+    }
+
+    fn interest(&self) -> Interest {
+        self.interest
     }
 }
 

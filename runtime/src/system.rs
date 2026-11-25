@@ -74,7 +74,7 @@ pub fn theme_changes() -> Subscription<theme::Mode> {
     #[derive(Hash)]
     struct ThemeChanges;
 
-    subscription::filter_map(ThemeChanges, |event| {
+    subscription::filter_map_with_interest(ThemeChanges, subscription::Interest::SYSTEM, |event| {
         let subscription::Event::SystemThemeChanged(mode) = event else {
             return None;
         };
@@ -95,11 +95,15 @@ pub fn reduced_motion_changes() -> Subscription<bool> {
     #[derive(Hash)]
     struct ReducedMotionChanges;
 
-    subscription::filter_map(ReducedMotionChanges, |event| {
-        let subscription::Event::SystemReducedMotionChanged(reduced_motion) = event else {
-            return None;
-        };
+    subscription::filter_map_with_interest(
+        ReducedMotionChanges,
+        subscription::Interest::SYSTEM,
+        |event| {
+            let subscription::Event::SystemReducedMotionChanged(reduced_motion) = event else {
+                return None;
+            };
 
-        Some(reduced_motion)
-    })
+            Some(reduced_motion)
+        },
+    )
 }

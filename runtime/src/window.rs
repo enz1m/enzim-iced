@@ -9,8 +9,8 @@ use crate::core::window::{
 };
 use crate::core::{Point, Size, Window};
 use crate::futures::Subscription;
-use crate::futures::event;
 use crate::futures::futures::channel::oneshot;
+use crate::futures::{event, subscription};
 use crate::task::{self, Task};
 
 /// An operation to be performed on some window.
@@ -252,15 +252,21 @@ pub enum Action {
 /// In any case, this [`Subscription`] is useful to smoothly draw application-driven
 /// animations without missing any frames.
 pub fn frames() -> Subscription<Instant> {
-    event::listen_raw(|event, _status, _window| match event {
-        crate::core::Event::Window(Event::RedrawRequested(at)) => Some(at),
+    #[derive(Hash)]
+    struct Frames;
+
+    subscription::filter_map_with_interest(Frames, event::Interest::REDRAWS, |event| match event {
+        subscription::Event::Interaction {
+            event: crate::core::Event::Window(Event::RedrawRequested(at)),
+            ..
+        } => Some(at),
         _ => None,
     })
 }
 
-/// Subscribes to all window events of the running application.
+/// Subscribes to window events, excluding redraw requests.
 pub fn events() -> Subscription<(Id, Event)> {
-    event::listen_with(|event, _status, id| {
+    event::listen_with_interest(event::Interest::WINDOW, |event, _status, id| {
         if let crate::core::Event::Window(event) = event {
             Some((id, event))
         } else {
@@ -271,7 +277,7 @@ pub fn events() -> Subscription<(Id, Event)> {
 
 /// Subscribes to all [`Event::Opened`] occurrences in the running application.
 pub fn open_events() -> Subscription<Id> {
-    event::listen_with(|event, _status, id| {
+    event::listen_with_interest(event::Interest::WINDOW, |event, _status, id| {
         if let crate::core::Event::Window(Event::Opened { .. }) = event {
             Some(id)
         } else {
@@ -282,7 +288,7 @@ pub fn open_events() -> Subscription<Id> {
 
 /// Subscribes to all [`Event::Closed`] occurrences in the running application.
 pub fn close_events() -> Subscription<Id> {
-    event::listen_with(|event, _status, id| {
+    event::listen_with_interest(event::Interest::WINDOW, |event, _status, id| {
         if let crate::core::Event::Window(Event::Closed) = event {
             Some(id)
         } else {
@@ -293,7 +299,7 @@ pub fn close_events() -> Subscription<Id> {
 
 /// Subscribes to all [`Event::Resized`] occurrences in the running application.
 pub fn resize_events() -> Subscription<(Id, Size)> {
-    event::listen_with(|event, _status, id| {
+    event::listen_with_interest(event::Interest::WINDOW, |event, _status, id| {
         if let crate::core::Event::Window(Event::Resized(size)) = event {
             Some((id, size))
         } else {
@@ -304,7 +310,7 @@ pub fn resize_events() -> Subscription<(Id, Size)> {
 
 /// Subscribes to all [`Event::CloseRequested`] occurrences in the running application.
 pub fn close_requests() -> Subscription<Id> {
-    event::listen_with(|event, _status, id| {
+    event::listen_with_interest(event::Interest::WINDOW, |event, _status, id| {
         if let crate::core::Event::Window(Event::CloseRequested) = event {
             Some(id)
         } else {
