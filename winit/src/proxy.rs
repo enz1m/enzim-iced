@@ -2,20 +2,32 @@
 use crate::futures::futures::{
     Future, Sink, StreamExt,
     channel::mpsc,
-    select,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 use crate::graphics::shell;
 use crate::runtime::Action;
 use crate::runtime::window;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// An event loop proxy with backpressure that implements `Sink`.
 #[derive(Debug)]
 pub struct Proxy<T: 'static> {
     raw: winit::event_loop::EventLoopProxy<Action<T>>,
     sender: mpsc::Sender<Action<T>>,
-    notifier: mpsc::Sender<usize>,
+    slots: Arc<Slots>,
+}
+
+// Actions sent through the `Sink` and not yet freed by the event loop. A
+// sender only parks, and `free_slots` only wakes, when the limit is reached.
+// Both sides store one flag and then load the other, so every access is
+// `SeqCst`: a weaker order could lose the wake of a parked sender.
+#[derive(Debug, Default)]
+struct Slots {
+    in_flight: AtomicUsize,
+    has_waiters: AtomicBool,
+    waiters: Mutex<Vec<Waker>>,
 }
 
 impl<T: 'static> Clone for Proxy<T> {
@@ -23,7 +35,7 @@ impl<T: 'static> Clone for Proxy<T> {
         Self {
             raw: self.raw.clone(),
             sender: self.sender.clone(),
-            notifier: self.notifier.clone(),
+            slots: self.slots.clone(),
         }
     }
 }
@@ -32,36 +44,17 @@ impl<T: 'static> Proxy<T> {
     const MAX_SIZE: usize = 100;
 
     /// Creates a new [`Proxy`] from an `EventLoopProxy`.
+    ///
+    /// The returned future forwards the actions of [`Proxy::input`].
     pub fn new(
         raw: winit::event_loop::EventLoopProxy<Action<T>>,
     ) -> (Self, impl Future<Output = ()>) {
-        let (notifier, mut processed) = mpsc::channel(Self::MAX_SIZE);
         let (sender, mut receiver) = mpsc::channel(Self::MAX_SIZE);
         let proxy = raw.clone();
 
         let worker = async move {
-            let mut count = 0;
-
-            loop {
-                if count < Self::MAX_SIZE {
-                    select! {
-                        message = receiver.select_next_some() => {
-                            let _ = proxy.send_event(message);
-                            count += 1;
-                        }
-                        amount = processed.select_next_some() => {
-                            count = count.saturating_sub(amount);
-                        }
-                        complete => break,
-                    }
-                } else {
-                    select! {
-                        amount = processed.select_next_some() => {
-                            count = count.saturating_sub(amount);
-                        }
-                        complete => break,
-                    }
-                }
+            while let Some(action) = receiver.next().await {
+                let _ = proxy.send_event(action);
             }
         };
 
@@ -69,7 +62,7 @@ impl<T: 'static> Proxy<T> {
             Self {
                 raw,
                 sender,
-                notifier,
+                slots: Arc::new(Slots::default()),
             },
             worker,
         )
@@ -109,36 +102,68 @@ impl<T: 'static> Proxy<T> {
     /// Frees an amount of slots for additional messages to be queued in
     /// this [`Proxy`].
     pub fn free_slots(&mut self, amount: usize) {
-        let _ = self.notifier.start_send(amount);
+        self.slots.free(amount);
+    }
+}
+
+impl Slots {
+    fn poll_ready(&self, limit: usize, cx: &mut Context<'_>) -> Poll<()> {
+        if self.in_flight.load(Ordering::SeqCst) < limit {
+            return Poll::Ready(());
+        }
+
+        self.waiters
+            .lock()
+            .expect("Lock waiters")
+            .push(cx.waker().clone());
+        self.has_waiters.store(true, Ordering::SeqCst);
+
+        // A slot freed between the check and the registration must not be missed.
+        if self.in_flight.load(Ordering::SeqCst) < limit {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+
+    fn acquire(&self) {
+        let _ = self.in_flight.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn free(&self, amount: usize) {
+        let _ = self
+            .in_flight
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                Some(count.saturating_sub(amount))
+            });
+
+        if self.has_waiters.swap(false, Ordering::SeqCst) {
+            let waiters = std::mem::take(&mut *self.waiters.lock().expect("Lock waiters"));
+            for waker in waiters {
+                waker.wake();
+            }
+        }
     }
 }
 
 impl<T: 'static> Sink<Action<T>> for Proxy<T> {
     type Error = mpsc::SendError;
 
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.sender.poll_ready(cx)
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.slots.poll_ready(Self::MAX_SIZE, cx).map(Ok)
     }
 
-    fn start_send(mut self: Pin<&mut Self>, action: Action<T>) -> Result<(), Self::Error> {
-        self.sender.start_send(action)
+    fn start_send(self: Pin<&mut Self>, action: Action<T>) -> Result<(), Self::Error> {
+        self.slots.acquire();
+        let _ = self.raw.send_event(action);
+        Ok(())
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.sender.poll_ready(cx) {
-            Poll::Ready(Err(ref e)) if e.is_disconnected() => {
-                // If the receiver disconnected, we consider the sink to be flushed.
-                Poll::Ready(Ok(()))
-            }
-            x => x,
-        }
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
     }
 
-    fn poll_close(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        self.sender.disconnect();
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 }
@@ -157,5 +182,58 @@ where
 
     fn invalidate_layout(&self) {
         self.send_action(Action::Window(window::Action::RelayoutAll));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Slots;
+    use crate::futures::futures::task::{ArcWake, Context, Poll, waker};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct CountingWaker(AtomicUsize);
+
+    impl ArcWake for CountingWaker {
+        fn wake_by_ref(arc_self: &Arc<Self>) {
+            let _ = arc_self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn sender_parks_at_the_limit_until_a_slot_is_freed() {
+        let slots = Slots::default();
+        let wakes = Arc::new(CountingWaker::default());
+        let waker = waker(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+
+        for _ in 0..2 {
+            assert_eq!(slots.poll_ready(2, &mut cx), Poll::Ready(()));
+            slots.acquire();
+        }
+        assert_eq!(slots.poll_ready(2, &mut cx), Poll::Pending);
+        assert_eq!(wakes.0.load(Ordering::SeqCst), 0);
+
+        slots.free(1);
+
+        assert_eq!(wakes.0.load(Ordering::SeqCst), 1);
+        assert_eq!(slots.poll_ready(2, &mut cx), Poll::Ready(()));
+    }
+
+    #[test]
+    fn freeing_below_the_limit_wakes_nobody() {
+        let slots = Slots::default();
+        let wakes = Arc::new(CountingWaker::default());
+        let waker = waker(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+
+        slots.acquire();
+        assert_eq!(slots.poll_ready(2, &mut cx), Poll::Ready(()));
+        slots.free(5);
+
+        assert_eq!(wakes.0.load(Ordering::SeqCst), 0);
+        assert_eq!(slots.in_flight.load(Ordering::SeqCst), 0);
+        assert!(slots.waiters.lock().unwrap().is_empty());
     }
 }
