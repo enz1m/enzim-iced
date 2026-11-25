@@ -238,7 +238,9 @@ fn hundred_image_working_set_returns_to_allocated_layer_baseline_after_the_grace
         eprintln!("SKIP: no wgpu adapter available in this environment");
         return;
     };
-    let baseline = renderer.image_cache_statistics();
+    let cold = renderer.image_cache_statistics();
+    assert_eq!(cold.atlas_layers, 0);
+    assert_eq!(cold.atlas_allocated_bytes, 0);
     let rasters = (0..100u8)
         .map(|value| {
             ImageHandle::from_rgba(
@@ -251,6 +253,11 @@ fn hundred_image_working_set_returns_to_allocated_layer_baseline_after_the_grace
         })
         .collect::<Vec<_>>();
     let svg = SvgHandle::from_memory(SVG.to_vec());
+
+    draw_raster(&mut renderer, &rasters[0]);
+    present(&mut renderer);
+    let baseline = renderer.image_cache_statistics();
+    reset(&mut renderer);
 
     for handle in &rasters {
         draw_raster(&mut renderer, handle);

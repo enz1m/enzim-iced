@@ -487,7 +487,9 @@ impl Cache {
             } => {
                 return Some((
                     entry,
-                    bind_group.as_ref().unwrap_or(self.atlas.bind_group()),
+                    bind_group
+                        .as_ref()
+                        .unwrap_or_else(|| self.atlas.bind_group()),
                 ));
             }
             Memory::Host(image) => image.clone(),
