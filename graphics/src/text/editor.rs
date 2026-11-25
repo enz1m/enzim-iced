@@ -278,6 +278,8 @@ pub struct Editor(Option<Arc<Internal>>);
 struct Internal {
     identity: Arc<()>,
     revision: Arc<()>,
+    /// Whether anything changed since an update last settled the layout.
+    unsettled: bool,
     editor: cosmic_text::Editor<'static>,
     selection: RwLock<Option<Selection>>,
     history: History,
@@ -366,9 +368,48 @@ impl Editor {
             .expect("Editor should always be initialized")
     }
 
+    /// Whether an update with these settings would change nothing.
+    fn is_settled(
+        &self,
+        bounds: Size,
+        font: Font,
+        size: Pixels,
+        line_height: LineHeight,
+        wrapping: Wrapping,
+        alignment: Alignment,
+        hint_factor: Option<f32>,
+    ) -> bool {
+        let internal = self.internal();
+        let buffer = buffer_from_editor(&internal.editor);
+        let hint_factor = text::hint_factor(size, hint_factor);
+        let scale = hint_factor.unwrap_or(1.0);
+        let metrics =
+            cosmic_text::Metrics::new(size.0 * scale, line_height.to_absolute(size).0 * scale);
+
+        !internal.unsettled
+            && !internal.pending_full_reset
+            && internal.pending_edits.is_empty()
+            && internal.topmost_line_changed.is_none()
+            && internal.exclusions.is_empty()
+            && buffer.exclusions().is_empty()
+            && bounds == internal.bounds
+            && font == internal.font
+            && hint_factor == internal.hint.then_some(internal.hint_factor)
+            && buffer.metrics() == metrics
+            && buffer.wrap() == text::to_wrap(wrapping)
+            && (internal.line_alignment_installed
+                || (alignment == internal.alignment
+                    && (alignment == Alignment::Default
+                        || buffer.lines.len() == internal.aligned_lines)))
+            && text::font_system()
+                .read()
+                .is_ok_and(|fonts| fonts.version() == internal.version)
+    }
+
     fn with_internal_mut<T>(&mut self, f: impl FnOnce(&mut Internal) -> T) -> T {
         self.with_geometry_mut(|internal| {
             internal.revision = Arc::new(());
+            internal.unsettled = true;
             f(internal)
         })
         .expect("Editor cannot have multiple strong references")
@@ -1187,7 +1228,10 @@ impl editor::Editor for Editor {
         if let Some(metrics) = self.internal().resolved_scroll_metrics {
             return metrics;
         }
+        // Resolving only refines caches that an update refines again.
+        let unsettled = self.internal().unsettled;
         self.with_internal_mut(|internal| {
+            internal.unsettled = unsettled;
             let hint_factor = internal.hint_factor;
             let viewport = internal.bounds;
             let window = viewport_height(viewport, hint_factor);
@@ -1349,6 +1393,20 @@ impl editor::Editor for Editor {
         new_hint_factor: Option<f32>,
         new_highlighter: &mut impl Parser,
     ) {
+        if self.is_settled(
+            new_bounds,
+            new_font,
+            new_size,
+            new_line_height,
+            new_wrapping,
+            new_alignment,
+            new_hint_factor,
+        ) {
+            if new_highlighter.has_layout_style() {
+                highlight_layout(self, new_font, new_highlighter);
+            }
+            return;
+        }
         self.with_internal_mut(|internal| {
             // Resizing retains a visible caret without overriding a wheel viewport away from it.
             let keep_caret_visible = new_bounds != internal.bounds
@@ -1614,6 +1672,7 @@ impl editor::Editor for Editor {
                 window,
             );
             release_offscreen_layouts(internal, window);
+            internal.unsettled = false;
         });
         if new_highlighter.has_layout_style() {
             highlight_layout(self, new_font, new_highlighter);
@@ -1881,6 +1940,7 @@ impl editor::Editor for Editor {
         // shaping pass on a frame with nothing to shape (#1802).
         if mutated {
             internal.revision = Arc::new(());
+            internal.unsettled = true;
             internal.resolved_scroll_metrics = None;
             internal.selection = RwLock::new(None);
             buffer_mut_from_editor(&mut internal.editor).note_encapsulated_line_mutation();
@@ -2024,6 +2084,7 @@ impl Default for Internal {
         Self {
             identity: Arc::new(()),
             revision: Arc::new(()),
+            unsettled: true,
             editor: cosmic_text::Editor::new({
                 let mut buffer = cosmic_text::Buffer::new_empty(cosmic_text::Metrics {
                     font_size: 1.0,
@@ -3477,6 +3538,55 @@ mod tests {
             Selection::Range(regions) => regions,
             Selection::Caret(position) => vec![Rectangle::new(position, Size::new(0.0, 0.0))],
         }
+    }
+
+    fn revision(editor: &Editor) -> Arc<()> {
+        editor.internal().revision.clone()
+    }
+
+    fn unchanged(editor: &Editor, revision: &Arc<()>) -> bool {
+        Arc::ptr_eq(&editor.internal().revision, revision)
+    }
+
+    /// Sabotage: leave `unsettled` set when resolving scroll metrics, or
+    /// leave it clear on a change of line alignment -- the repeated layout
+    /// changes the state, or the aligned lines are never laid out.
+    #[test]
+    fn a_layout_that_changes_nothing_keeps_the_editor_state() {
+        let mut editor = Editor::with_text("one\ntwo\nthree");
+        layout(&mut editor, 120.0);
+        let settled = revision(&editor);
+        layout(&mut editor, 120.0);
+        assert!(unchanged(&editor, &settled), "the same layout again");
+
+        let _ = editor.scroll_metrics();
+        let resolved = revision(&editor);
+        layout(&mut editor, 120.0);
+        assert!(
+            unchanged(&editor, &resolved),
+            "after reading scroll metrics"
+        );
+
+        layout(&mut editor, 60.0);
+        assert!(!unchanged(&editor, &resolved), "a narrower layout");
+
+        editor.set_line_alignment(&|_| Alignment::Right);
+        layout(&mut editor, 60.0);
+        assert_eq!(
+            editor
+                .buffer()
+                .layout_runs()
+                .filter(|run| run.glyphs.first().is_some_and(|glyph| glyph.x > 0.0))
+                .count(),
+            3,
+            "the lines are laid out aligned right"
+        );
+        let aligned = revision(&editor);
+        layout(&mut editor, 60.0);
+        assert!(
+            unchanged(&editor, &aligned),
+            "the alignment, laid out again"
+        );
     }
 
     /// Sabotage: drop `row.top_gap` from `selection_regions`; the first
