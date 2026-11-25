@@ -480,6 +480,14 @@ impl State {
         }
     }
 
+    pub fn release_targets(&mut self) {
+        self.scene = None;
+        self.direct = None;
+        self.targets.clear();
+        self.composites.clear();
+        self.account();
+    }
+
     /// Opens the frame.
     ///
     /// Returns the view every layer must be rendered into when this frame has a

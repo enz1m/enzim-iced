@@ -196,6 +196,7 @@ where
                 lane_disabled: false,
                 presentation_quarantined: false,
                 shows_ui_present: false,
+                occluded: false,
                 input_recovery: None,
                 native_input_commit: None,
                 input_relayout: false,
@@ -406,6 +407,7 @@ where
     /// presented to it, and it has not been replaced or reconfigured since.
     /// Only then may a frame that changed nothing skip its present.
     shows_ui_present: bool,
+    pub occluded: bool,
     input_recovery: Option<crate::graphics::presentation::NativeInputRecovery>,
     input_relayout: bool,
     native_input_commit: Option<crate::graphics::presentation::FrameKey>,
@@ -1542,6 +1544,24 @@ where
                 self.redraw_at = Some(self.redraw_at.map_or(at, |pending| pending.min(at)));
             }
             RedrawRequest::Wait => {}
+        }
+    }
+
+    pub fn set_occluded(&mut self, occluded: bool, compositor: Option<&mut C>) {
+        if self.occluded == occluded {
+            return;
+        }
+
+        self.occluded = occluded;
+        if occluded {
+            self.redraw_at = None;
+            let _ = self.reclaim_surface();
+            self.shows_ui_present = false;
+            if let Some(compositor) = compositor {
+                compositor.release_frame_targets(&mut self.renderer);
+            }
+        } else {
+            self.request_full_redraw();
         }
     }
 

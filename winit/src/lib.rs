@@ -1377,6 +1377,10 @@ async fn run_instance<P>(
                             continue;
                         };
 
+                        if window.occluded {
+                            continue;
+                        }
+
                         // A redraw is one turn of the UI thread: every drain it
                         // performs shares one cooperative budget.
                         fair.begin_turn();
@@ -2437,8 +2441,8 @@ async fn run_instance<P>(
                                 window.note_resized(Instant::now());
                                 window.request_full_redraw();
                             }
-                            winit::event::WindowEvent::Occluded(false) => {
-                                window.request_full_redraw();
+                            winit::event::WindowEvent::Occluded(occluded) => {
+                                window.set_occluded(occluded, compositor.as_mut());
                             }
                             winit::event::WindowEvent::ThemeChanged(theme) => {
                                 route_native_theme_changed(

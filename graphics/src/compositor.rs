@@ -162,6 +162,9 @@ pub trait Compositor: Sized {
         PresentationQuality::Submitted
     }
 
+    /// Releases temporary frame targets until the next present.
+    fn release_frame_targets(&mut self, _renderer: &mut Self::Renderer) {}
+
     /// Presents the [`Renderer`] primitives to the next frame of the given [`Surface`].
     ///
     /// [`Renderer`]: Self::Renderer

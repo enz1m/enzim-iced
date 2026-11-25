@@ -1323,6 +1323,38 @@ mod frames {
         (read(&full, &target), full.screenshot(viewport, background))
     }
 
+    #[test]
+    fn the_first_present_after_releasing_the_canvas_matches_a_full_redraw() {
+        let viewport = Viewport::with_physical_size(
+            SIZE,
+            renderer::Scale {
+                window: 1.0,
+                application: 1.0,
+            },
+        );
+        let mut window = renderer();
+        window.track_frame_damage(true);
+        let target = surface_texture(&window);
+        let label = paragraph("Canvas restored");
+        widget_frame(&mut window, 0.4, 0, &label);
+        let _ = window.present_damaged(Color::BLACK, &target, &viewport, false);
+
+        widget_frame(&mut window, 0.9, 1, &label);
+        assert!(!window.unchanged_frame(Color::BLACK, &viewport));
+        window.release_frame_targets();
+        assert!(window.canvas_texture().is_none());
+
+        widget_frame(&mut window, 0.9, 1, &label);
+        assert!(!window.unchanged_frame(Color::BLACK, &viewport));
+        let full_frames = window.full_frames();
+        let _ = window.present_damaged(Color::BLACK, &target, &viewport, false);
+        assert_eq!(window.full_frames(), full_frames + 1);
+        assert_eq!(window.take_present_damage(), None);
+
+        let (expected, _) = full_frame(Color::BLACK, &viewport, 0.9, 1, &label);
+        assert_eq!(read(&window, &target), expected);
+    }
+
     /// Frames drawn by widgets are compared by what their layers paint: a
     /// frame painted again only where it differs from the last one shows
     /// what a full paint does, after a square moved, a tile was repainted,

@@ -2726,11 +2726,16 @@ impl Renderer {
         false
     }
 
-    /// Releases the cached canvas and alpha targets.
-    /// The next frame recreates them and repaints in full.
+    /// Releases the cached frame targets so the next present repaints in full.
     pub fn release_frame_targets(&mut self) {
         self.canvas = None;
+        self.canvas_clear = None;
+        self.frame_damage_ahead = None;
         self.alpha.release_targets();
+        self.material.release_targets();
+
+        // Completed submissions can retain dropped targets until the device is polled.
+        let _ = self.engine.device.poll(wgpu::PollType::Poll);
     }
 
     /// Forgets the canvas and any damage measured ahead of a present that did

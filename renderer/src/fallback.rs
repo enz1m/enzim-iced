@@ -1017,6 +1017,18 @@ where
         }
     }
 
+    fn release_frame_targets(&mut self, renderer: &mut Self::Renderer) {
+        match (self, renderer) {
+            (Self::Primary(compositor), Renderer::Primary(renderer)) => {
+                compositor.release_frame_targets(renderer);
+            }
+            (Self::Secondary(compositor), Renderer::Secondary(renderer)) => {
+                compositor.release_frame_targets(renderer);
+            }
+            _ => unreachable!(),
+        }
+    }
+
     fn unchanged(
         &mut self,
         renderer: &mut Self::Renderer,

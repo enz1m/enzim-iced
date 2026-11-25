@@ -970,6 +970,10 @@ impl graphics::Compositor for Compositor {
         )
     }
 
+    fn release_frame_targets(&mut self, renderer: &mut Self::Renderer) {
+        renderer.release_frame_targets();
+    }
+
     fn unchanged(
         &mut self,
         renderer: &mut Self::Renderer,
