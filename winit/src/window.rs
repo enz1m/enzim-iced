@@ -1,5 +1,6 @@
 // Modified by enzUI contributors. See FORK.md.
 mod state;
+mod update_pacing;
 
 use state::State;
 
@@ -197,6 +198,7 @@ where
                 presentation_quarantined: false,
                 shows_ui_present: false,
                 occluded: false,
+                update_pacing: update_pacing::UpdatePacing::default(),
                 input_recovery: None,
                 native_input_commit: None,
                 input_relayout: false,
@@ -408,6 +410,7 @@ where
     /// Only then may a frame that changed nothing skip its present.
     shows_ui_present: bool,
     pub occluded: bool,
+    update_pacing: update_pacing::UpdatePacing,
     input_recovery: Option<crate::graphics::presentation::NativeInputRecovery>,
     input_relayout: bool,
     native_input_commit: Option<crate::graphics::presentation::FrameKey>,
@@ -1351,6 +1354,13 @@ where
         // nothing to composite again.
         let unchanged = self.shows_ui_present
             && compositor.unchanged(&mut self.renderer, &viewport, background);
+        let grid = self.presentation.presentation_grid();
+        self.update_pacing.presented(unchanged, || {
+            let now = Instant::now();
+            grid.map_or(now + std::time::Duration::from_micros(16_667), |grid| {
+                grid.next_after(now)
+            })
+        });
         let result = if unchanged {
             Ok(())
         } else {
@@ -1567,6 +1577,34 @@ where
 
     /// Requests a frame that must be drawn in full (enzUI-ICED #3442).
     pub fn request_full_redraw(&mut self) {
+        self.update_pacing.other_requested();
+        self.full_redraw
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.raw.request_redraw();
+    }
+
+    /// Requests the full redraw a program update owes this window. After a
+    /// frame drawn for updates alone that changed nothing, it waits for the
+    /// next vblank.
+    pub fn request_update_redraw(&mut self) {
+        let frame_pending = self
+            .full_redraw
+            .swap(true, std::sync::atomic::Ordering::AcqRel);
+        match self
+            .update_pacing
+            .update_requested(frame_pending, Instant::now())
+        {
+            Some(until) => {
+                self.redraw_at = Some(self.redraw_at.map_or(until, |pending| pending.min(until)));
+            }
+            None => self.raw.request_redraw(),
+        }
+    }
+
+    /// Requests the full redraw scheduled by `redraw_at`, keeping the cause of
+    /// the frame it was scheduled for.
+    pub fn request_scheduled_redraw(&mut self) {
+        self.redraw_at = None;
         self.full_redraw
             .store(true, std::sync::atomic::Ordering::Release);
         self.raw.request_redraw();
@@ -1593,7 +1631,9 @@ where
         let full = self
             .full_redraw
             .swap(false, std::sync::atomic::Ordering::AcqRel);
-        std::mem::take(&mut self.content_redraw) && !full
+        let content_only = std::mem::take(&mut self.content_redraw) && !full;
+        self.update_pacing.begin_frame(!content_only);
+        content_only
     }
 
     /// Whether an input method preedit is shown over the window.

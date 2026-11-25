@@ -1298,8 +1298,7 @@ async fn run_instance<P>(
                             if let Some(redraw_at) = window.redraw_at
                                 && redraw_at <= now
                             {
-                                window.request_full_redraw();
-                                window.redraw_at = None;
+                                window.request_scheduled_redraw();
                             }
                         }
 
@@ -1568,6 +1567,7 @@ async fn run_instance<P>(
                                     caches,
                                     &mut proxy,
                                     &plan,
+                                    |window| window == id,
                                 );
 
                                 user_interfaces = ManuallyDrop::new(interfaces);
@@ -1629,7 +1629,7 @@ async fn run_instance<P>(
                                     }
 
                                     invalidation::instrumentation::redraw_request(window_id);
-                                    window.request_full_redraw();
+                                    window.request_update_redraw();
                                 }
 
                                 let Some(next_compositor) = compositor.as_mut() else {
@@ -2759,6 +2759,7 @@ async fn run_instance<P>(
                         }
 
                         let mut stale_uis: Vec<window::Id> = Vec::new();
+                        let mut input_windows: Vec<window::Id> = Vec::new();
 
                         for (id, window) in window_manager.iter_mut() {
                             let interact_span = debug::interact(id);
@@ -2777,6 +2778,7 @@ async fn run_instance<P>(
                             if window_events.is_empty() {
                                 continue;
                             }
+                            input_windows.push(id);
 
                             if window.presentation_quarantined() {
                                 for event in window_events {
@@ -3032,6 +3034,7 @@ async fn run_instance<P>(
                                 cached_interfaces,
                                 &mut proxy,
                                 &plan,
+                                |_| false,
                             );
 
                             user_interfaces = ManuallyDrop::new(interfaces);
@@ -3065,7 +3068,12 @@ async fn run_instance<P>(
                                 }
 
                                 invalidation::instrumentation::redraw_request(id);
-                                window.request_full_redraw();
+                                // A window that received input this batch is never paced.
+                                if input_windows.contains(&id) {
+                                    window.request_full_redraw();
+                                } else {
+                                    window.request_update_redraw();
+                                }
                             }
                         }
 
@@ -4393,13 +4401,14 @@ where
         cached_user_interfaces,
         proxy,
         &invalidation::Plan::global(),
+        |_| true,
     );
 
     interfaces
 }
 
-/// Builds the user interface of every window a [`Plan`] dirtied, and parks
-/// the cache of every window it left clean.
+/// Builds the user interface of every window a [`Plan`] dirtied that `eager`
+/// accepts, and parks the cache of every other window.
 ///
 /// A parked window pays no `view`, no `UserInterface::build` and no layout;
 /// the runtime revives it from its cache the next time an event or a redraw
@@ -4412,6 +4421,7 @@ pub fn build_user_interfaces_scoped<'a, P: Program, C>(
     mut cached_user_interfaces: FxHashMap<window::Id, user_interface::Cache>,
     proxy: &mut Proxy<P::Message>,
     plan: &invalidation::Plan,
+    eager: impl Fn(window::Id) -> bool,
 ) -> (
     FxHashMap<window::Id, UserInterface<'a, P::Message, P::Theme, P::Renderer>>,
     FxHashMap<window::Id, user_interface::Cache>,
@@ -4481,11 +4491,18 @@ where
     let live: rustc_hash::FxHashSet<window::Id> =
         window_manager.iter_mut().map(|(id, _window)| id).collect();
 
+    let mut parked_dirty = Vec::new();
     let slots = invalidation::rebuild(
         &plan,
         cached_user_interfaces.drain(),
         |id| live.contains(&id),
         |id, cache| {
+            // A deferred dirty window is rebuilt by its own next redraw, or by
+            // the next event that reaches it.
+            if !eager(id) {
+                parked_dirty.push((id, cache));
+                return None;
+            }
             let window = window_manager.get_mut(id)?;
             window.begin_native_update(id);
 
@@ -4512,6 +4529,7 @@ where
             }
         }
     }
+    parked.extend(parked_dirty);
 
     (interfaces, parked)
 }
