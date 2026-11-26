@@ -321,7 +321,8 @@ pub fn try_resolve_content<C: TryContent>(
 ) -> Result<Node, C::Error> {
     let captured_limits = *limits;
     let limits = limits.width(width).height(height).shrink(padding);
-    let total_spacing = spacing * content.count().saturating_sub(1) as f32;
+    let count = content.count();
+    let total_spacing = spacing * count.saturating_sub(1) as f32;
     // Upstream #3472: the max is a hint on an infinite axis, which the
     // children inherit.
     let max_cross = axis.cross(limits.max);
@@ -352,8 +353,7 @@ pub fn try_resolve_content<C: TryContent>(
     let mut cross = 0.0f32;
     let mut available = axis.main(limits.max) - total_spacing;
 
-    let mut nodes: Vec<Node> = Vec::with_capacity(content.count());
-    nodes.resize(content.count(), Node::default());
+    let mut nodes = Vec::with_capacity(count);
 
     #[derive(Debug, Clone, Copy)]
     struct Meta {
@@ -371,12 +371,12 @@ pub fn try_resolve_content<C: TryContent>(
         MainFluid,
     }
 
-    let mut metas = Vec::with_capacity(content.count());
+    let mut metas = Vec::with_capacity(count);
     let mut deferred_main = 0.0f32;
 
     // A compressed cross extent must come from intrinsic siblings
     // before cross-fluid children can use it.
-    for (i, node) in nodes.iter_mut().enumerate() {
+    for i in 0..count {
         let size = content.sizing(i)?;
         let (size_main, size_cross) = axis.pack(size.width, size.height);
 
@@ -437,6 +437,7 @@ pub fn try_resolve_content<C: TryContent>(
         let Category::Static = meta.category else {
             fill_main_sum += fill_main_factor;
             some_fill_cross = some_fill_cross || fill_cross_factor != 0;
+            nodes.push(Node::default());
             continue;
         };
 
@@ -455,7 +456,7 @@ pub fn try_resolve_content<C: TryContent>(
 
         available -= axis.main(size);
         cross = cross.max(axis.cross(size));
-        *node = layout;
+        nodes.push(layout);
     }
 
     // A fixed-size static child keeps its extent. In-order measurement lets
@@ -477,7 +478,7 @@ pub fn try_resolve_content<C: TryContent>(
     // every earlier child; keep in-order measurement there.
     if crushed && reserve <= room {
         cross = 0.0;
-        for i in 0..content.count() {
+        for i in 0..count {
             let meta = metas[i];
             let Category::Static = meta.category else {
                 continue;
@@ -507,7 +508,7 @@ pub fn try_resolve_content<C: TryContent>(
     // Fixed-main children can wait for the main-fluid pass
     // to establish the final compressed cross extent.
     if cross_dynamic && some_fill_cross {
-        for i in 0..content.count() {
+        for i in 0..count {
             let meta = metas[i];
 
             let Category::CrossFluid = meta.category else {
@@ -560,7 +561,7 @@ pub fn try_resolve_content<C: TryContent>(
             Stage::Min => (0.0, 0),
         };
 
-        for i in 0..content.count() {
+        for i in 0..count {
             let meta = &mut metas[i];
 
             if meta.resolved {
@@ -650,7 +651,7 @@ pub fn try_resolve_content<C: TryContent>(
     }
 
     if !main_compress {
-        for i in 0..content.count() {
+        for i in 0..count {
             let meta = &mut metas[i];
 
             if meta.resolved {
@@ -699,7 +700,7 @@ pub fn try_resolve_content<C: TryContent>(
     }
 
     if cross_dynamic && some_fill_cross {
-        for i in 0..content.count() {
+        for i in 0..count {
             let meta = metas[i];
 
             let Category::CrossFluidDeferred(main) = meta.category else {

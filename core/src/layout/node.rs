@@ -14,7 +14,7 @@ pub struct Node {
     pub(crate) presented_reveal_progress: Option<f32>,
     /// Declarations few widgets make, kept out of line so a node stays small:
     /// layout moves and copies nodes for every widget.
-    rare: Option<Box<Rare>>,
+    rare: Option<std::sync::Arc<Rare>>,
     bounds: Rectangle,
     children: Vec<Node>,
     text_presentation: Option<TextPresentation>,
@@ -127,7 +127,7 @@ impl Node {
 
     /// The rare declarations, made on first write.
     pub(crate) fn rare_mut(&mut self) -> &mut Rare {
-        self.rare.get_or_insert_with(Box::default)
+        std::sync::Arc::make_mut(self.rare.get_or_insert_with(std::sync::Arc::default))
     }
 
     /// Retains subtree culling against the incoming viewport without changing layout geometry.
