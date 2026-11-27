@@ -1047,6 +1047,34 @@ where
                 let viewport =
                     bounds.intersection(viewport).unwrap_or_default() + state.last_translation;
 
+                let translated_touch;
+                let event = if let Event::Touch(touch) = event {
+                    let translation = state.last_translation;
+                    translated_touch = Event::Touch(match *touch {
+                        touch::Event::FingerPressed { id, position } => {
+                            touch::Event::FingerPressed {
+                                id,
+                                position: position + translation,
+                            }
+                        }
+                        touch::Event::FingerMoved { id, position } => touch::Event::FingerMoved {
+                            id,
+                            position: position + translation,
+                        },
+                        touch::Event::FingerLifted { id, position } => touch::Event::FingerLifted {
+                            id,
+                            position: position + translation,
+                        },
+                        touch::Event::FingerLost { id, position } => touch::Event::FingerLost {
+                            id,
+                            position: position + translation,
+                        },
+                    });
+                    &translated_touch
+                } else {
+                    event
+                };
+
                 if state.full_content_dispatch {
                     self.content.as_widget_mut().update(
                         &mut tree.children[0],
