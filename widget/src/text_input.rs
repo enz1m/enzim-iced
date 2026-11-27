@@ -1476,6 +1476,9 @@ where
         else {
             return InputMethod::Disabled;
         };
+        if self.on_input.is_none() {
+            return InputMethod::Disabled;
+        }
 
         let secure_value = self.is_secure.then(|| value.secure());
         let value = secure_value.as_ref().unwrap_or(value);
