@@ -35,8 +35,6 @@ pub struct Pipeline {
     linear_sampler: wgpu::Sampler,
     texture_layout: wgpu::BindGroupLayout,
     constant_layout: wgpu::BindGroupLayout,
-    #[cfg(all(feature = "image", not(target_arch = "wasm32")))]
-    pub(crate) upload_gate: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
 impl Pipeline {
@@ -182,20 +180,24 @@ impl Pipeline {
             linear_sampler,
             texture_layout,
             constant_layout,
-            #[cfg(all(feature = "image", not(target_arch = "wasm32")))]
-            upload_gate: std::sync::Arc::default(),
         }
     }
 
-    pub fn create_cache(&self, device: &wgpu::Device, queue: &wgpu::Queue, shell: &Shell) -> Cache {
+    pub(crate) fn create_cache(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        shell: &Shell,
+        #[cfg(feature = "image")] submission_gate: crate::engine::SubmissionGate,
+    ) -> Cache {
         Cache::new(
             device,
             queue,
             self.backend,
             self.texture_layout.clone(),
             shell,
-            #[cfg(all(feature = "image", not(target_arch = "wasm32")))]
-            self.upload_gate.clone(),
+            #[cfg(feature = "image")]
+            submission_gate,
         )
     }
 }

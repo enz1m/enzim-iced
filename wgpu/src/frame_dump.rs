@@ -29,12 +29,7 @@ pub(crate) fn enabled() -> bool {
 }
 
 /// Writes `texture`, about to be presented, to the dump directory.
-pub(crate) fn capture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    lane: bool,
-) {
+pub(crate) fn capture(engine: &crate::Engine, texture: &wgpu::Texture, lane: bool) {
     static START: OnceLock<Instant> = OnceLock::new();
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let Some(directory) = directory() else {
@@ -49,6 +44,7 @@ pub(crate) fn capture(
     let row = size.width as usize * 4;
     let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
     let padded = row.div_ceil(alignment) * alignment;
+    let device = &engine.device;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("iced_wgpu.frame_dump"),
         size: (padded * size.height as usize) as u64,
@@ -73,7 +69,7 @@ pub(crate) fn capture(
             ..size
         },
     );
-    let submission = queue.submit([encoder.finish()]);
+    let submission = engine.submit(encoder.finish());
     let slice = buffer.slice(..);
     let (send, receive) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {

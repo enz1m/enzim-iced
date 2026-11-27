@@ -839,11 +839,8 @@ mod tests {
 }
 
 /// Reads `texture` back as tightly packed 4-byte pixels.
-pub(crate) fn read_pixels(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-) -> Vec<u8> {
+pub(crate) fn read_pixels(engine: &crate::Engine, texture: &wgpu::Texture) -> Vec<u8> {
+    let device = &engine.device;
     let (width, height) = (texture.width(), texture.height());
     let row = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
         * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -866,7 +863,7 @@ pub(crate) fn read_pixels(
         },
         texture.size(),
     );
-    let _ = queue.submit([encoder.finish()]);
+    let _ = engine.submit(encoder.finish());
     let slice = buffer.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     let _ = device.poll(wgpu::PollType::wait_indefinitely());
@@ -1158,7 +1155,7 @@ mod frames {
     }
 
     fn read(renderer: &Renderer, texture: &wgpu::Texture) -> Vec<u8> {
-        super::read_pixels(&renderer.engine.device, &renderer.engine.queue, texture)
+        super::read_pixels(&renderer.engine, texture)
     }
 
     fn surface_texture(renderer: &Renderer) -> wgpu::Texture {

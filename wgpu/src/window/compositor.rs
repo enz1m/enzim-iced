@@ -238,11 +238,8 @@ fn lose_device_on_request(engine: &Engine) {
 
 /// The half of a [`Compositor`] a render lane needs (enzICED #2219).
 ///
-/// It is deliberately *not* the compositor: the UI thread keeps that, so
-/// creating surfaces, loading fonts, taking screenshots and querying adapter
-/// information never wait on the lane. What the lane owns is what only it
-/// touches -- the device handle it configures the surface with, and the surface
-/// format -- plus a second [`Renderer`] over the same device.
+/// The lane owns its renderer and surface while it animates. It shares the
+/// device and queue with the UI thread and other windows' lanes.
 struct LaneBackend {
     device: wgpu::Device,
     /// Asked whether the lane's surface accepts copies (enzUI-ICED #3666).
@@ -323,7 +320,6 @@ impl DamageCheck {
             return;
         };
         let device = &lane.engine.device;
-        let queue = &lane.engine.queue;
         let target = self
             .target
             .take()
@@ -344,8 +340,8 @@ impl DamageCheck {
         let _ = self
             .renderer
             .present(Some(background), canvas.format(), &view, viewport);
-        let partial = crate::damage::read_pixels(device, queue, canvas);
-        let full = crate::damage::read_pixels(device, queue, &target);
+        let partial = crate::damage::read_pixels(&lane.engine, canvas);
+        let full = crate::damage::read_pixels(&lane.engine, &target);
         let (differing, span) = crate::damage::difference(canvas.width(), &partial, &full);
         let _ = writeln!(
             self.log,
@@ -377,8 +373,8 @@ impl graphics::lane::Backend for LaneBackend {
             return;
         }
 
-        surface.configure(
-            &self.device,
+        self.renderer.engine.configure_surface(
+            surface,
             &wgpu::SurfaceConfiguration {
                 usage: surface_usage(surface, &self.adapter),
                 format: self.format,
@@ -763,18 +759,19 @@ fn check_frame_damage(
     let Some(canvas) = renderer.canvas_texture().cloned() else {
         return;
     };
-    let device = renderer.engine.device.clone();
-    let queue = renderer.engine.queue.clone();
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("iced_wgpu frame damage check"),
-        size: canvas.size(),
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: canvas.format(),
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let target = renderer
+        .engine
+        .device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("iced_wgpu frame damage check"),
+            size: canvas.size(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: canvas.format(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     if !renderer.present_snapshot(snapshot, background, canvas.format(), &view, viewport) {
         // The second renderer is still loading an image this frame shows.
@@ -787,8 +784,8 @@ fn check_frame_damage(
         }
         return;
     }
-    let partial = crate::damage::read_pixels(&device, &queue, &canvas);
-    let full = crate::damage::read_pixels(&device, &queue, &target);
+    let partial = crate::damage::read_pixels(&renderer.engine, &canvas);
+    let full = crate::damage::read_pixels(&renderer.engine, &target);
     let (differing, span) = crate::damage::difference(canvas.width(), &partial, &full);
     if let Ok(mut log) = log.lock() {
         let _ = writeln!(
@@ -894,21 +891,12 @@ impl graphics::Compositor for Compositor {
     }
 
     fn configure_surface(&mut self, surface: &mut Self::Surface, width: u32, height: u32) {
-        // Configuring with a lost device fails without a word and leaves the
-        // surface unconfigured; the rebuilt compositor configures it again.
-        if self.engine.device_lost() {
+        if width == 0 || height == 0 || self.engine.device_lost() {
             return;
         }
-        // wgpu requires an idle queue through surface configuration.
-        #[cfg(all(feature = "image", not(target_arch = "wasm32")))]
-        let _pause_uploads = self
-            .engine
-            .image_pipeline
-            .upload_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        surface.configure(
-            &self.engine.device,
+
+        self.engine.configure_surface(
+            surface,
             &wgpu::SurfaceConfiguration {
                 usage: surface_usage(surface, &self.adapter),
                 format: self.format,

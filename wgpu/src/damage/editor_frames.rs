@@ -205,7 +205,7 @@ fn target(renderer: &Renderer, size: Size<u32>) -> wgpu::Texture {
 }
 
 fn read(renderer: &Renderer, texture: &wgpu::Texture) -> Vec<u8> {
-    super::read_pixels(&renderer.engine.device, &renderer.engine.queue, texture)
+    super::read_pixels(&renderer.engine, texture)
 }
 
 /// How many pixels differ at all, and the box around them.

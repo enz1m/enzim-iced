@@ -2592,7 +2592,7 @@ impl Renderer {
 
     /// Writes a frame about to be presented to `ICED_FRAME_DUMP`, if set.
     pub(crate) fn dump_presented(&self, texture: &wgpu::Texture, lane: bool) {
-        frame_dump::capture(&self.engine.device, &self.engine.queue, texture, lane);
+        frame_dump::capture(&self.engine, texture, lane);
     }
 
     /// Keeps the lane's last frame from now on, so a replay that moved only
@@ -3041,7 +3041,7 @@ impl Renderer {
 
         self.staging_belt.finish();
         let prepare_ended = measure.then(std::time::Instant::now);
-        let submission = self.engine.queue.submit([encoder.finish()]);
+        let submission = self.engine.submit(encoder.finish());
         self.staging_belt.recall();
         self.trace_render_passes();
 
@@ -3081,7 +3081,7 @@ impl Renderer {
 
         let prepare_ended = measure.then(std::time::Instant::now);
 
-        let submission = self.engine.queue.submit([encoder.finish()]);
+        let submission = self.engine.submit(encoder.finish());
         self.staging_belt.recall();
         self.trace_render_passes();
 
@@ -3277,7 +3277,7 @@ impl Renderer {
             });
 
         self.staging_belt.finish();
-        let index = self.engine.queue.submit([encoder.finish()]);
+        let index = self.engine.submit(encoder.finish());
         self.staging_belt.recall();
         let audit = audit.map(readback_audit::Audit::map);
         let (send, receive) = std::sync::mpsc::sync_channel(COPIES);
@@ -3340,7 +3340,7 @@ impl Renderer {
                 &mut diagnostic,
                 audit_texture.as_ref().unwrap(),
             );
-            let submitted = self.engine.queue.submit([diagnostic.finish()]);
+            let submitted = self.engine.submit(diagnostic.finish());
             let pending = audit.map();
             let _ = self
                 .engine
