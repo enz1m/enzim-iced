@@ -184,6 +184,28 @@ fn px(buf: &[u8], x: u32, y: u32) -> [u8; 4] {
     [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
 }
 
+#[test]
+fn a_nearest_image_drawn_after_a_linear_image_stays_on_top() {
+    use iced_wgpu::core::image::{FilterMethod, Handle};
+
+    let mut renderer = try_renderer().expect("a wgpu adapter");
+    let bounds = rect(12.0, 12.0, 32.0, 32.0);
+    let image = |rgba, filter| Image::new(Handle::from_rgba(1, 1, rgba)).filter_method(filter);
+    renderer.draw_image(
+        image(vec![0, 0, 255, 255], FilterMethod::Linear),
+        bounds,
+        full(),
+    );
+    renderer.draw_image(
+        image(vec![255, 0, 0, 255], FilterMethod::Nearest),
+        bounds,
+        full(),
+    );
+
+    let pixels = <Renderer as Headless>::screenshot(&mut renderer, Size::new(W, H), 1.0, BG);
+    assert_eq!(px(&pixels, 20, 20), [255, 0, 0, 255]);
+}
+
 fn strongest_ink(buf: &[u8]) -> (u32, u32) {
     (0..H)
         .flat_map(|y| (0..W).map(move |x| (x, y)))

@@ -274,6 +274,19 @@ impl State {
                             _ => {}
                         }
 
+                        let linear = matches!(
+                            image.filter_method,
+                            crate::core::image::FilterMethod::Linear
+                        );
+                        let other_pending = if linear {
+                            self.nearest_instances.len() > layer.nearest_total
+                        } else {
+                            self.linear_instances.len() > layer.linear_total
+                        };
+                        if other_pending && let Some(current) = atlas.as_ref() {
+                            layer.push(current, &self.nearest_instances, &self.linear_instances);
+                        }
+
                         add_instances(
                             bounds,
                             clip_bounds,
@@ -329,6 +342,12 @@ impl State {
                                 *atlas = bind_group.clone();
                             }
                             _ => {}
+                        }
+
+                        if self.linear_instances.len() > layer.linear_total
+                            && let Some(current) = atlas.as_ref()
+                        {
+                            layer.push(current, &self.nearest_instances, &self.linear_instances);
                         }
 
                         add_instances(
@@ -391,10 +410,10 @@ impl State {
 struct Layer {
     uniforms: wgpu::Buffer,
     instances: Buffer<Instance>,
-    nearest: Vec<Group>,
+    // Sampler batches must preserve the painter order of overlapping images.
+    groups: Vec<Group>,
     nearest_layout: wgpu::BindGroup,
     nearest_total: usize,
-    linear: Vec<Group>,
     linear_layout: wgpu::BindGroup,
     linear_total: usize,
 }
@@ -402,6 +421,10 @@ struct Layer {
 #[derive(Debug)]
 struct Group {
     atlas: Arc<wgpu::BindGroup>,
+    /// Sampled linearly (its instances live after all the nearest ones)
+    linear: bool,
+    /// First instance within its sampler's instances
+    start: usize,
     instance_count: usize,
 }
 
@@ -467,10 +490,9 @@ impl Layer {
         Self {
             uniforms,
             instances,
-            nearest: Vec::new(),
+            groups: Vec::new(),
             nearest_layout,
             nearest_total: 0,
-            linear: Vec::new(),
             linear_layout,
             linear_total: 0,
         }
@@ -521,8 +543,10 @@ impl Layer {
         let new_nearest = nearest.len() - self.nearest_total;
 
         if new_nearest > 0 {
-            self.nearest.push(Group {
+            self.groups.push(Group {
                 atlas: atlas.clone(),
+                linear: false,
+                start: self.nearest_total,
                 instance_count: new_nearest,
             });
 
@@ -532,8 +556,10 @@ impl Layer {
         let new_linear = linear.len() - self.linear_total;
 
         if new_linear > 0 {
-            self.linear.push(Group {
+            self.groups.push(Group {
                 atlas: atlas.clone(),
+                linear: true,
+                start: self.linear_total,
                 instance_count: new_linear,
             });
 
@@ -544,36 +570,27 @@ impl Layer {
     fn render<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>) {
         render_pass.set_vertex_buffer(0, self.instances.slice(..));
 
-        let mut offset = 0;
+        let mut sampler: Option<bool> = None;
 
-        if !self.nearest.is_empty() {
-            render_pass.set_bind_group(0, &self.nearest_layout, &[]);
-
-            for group in &self.nearest {
-                render_pass.set_bind_group(1, group.atlas.as_ref(), &[]);
-                render_pass.draw(0..6, offset..offset + group.instance_count as u32);
-
-                offset += group.instance_count as u32;
+        for group in &self.groups {
+            if sampler != Some(group.linear) {
+                let layout = if group.linear {
+                    &self.linear_layout
+                } else {
+                    &self.nearest_layout
+                };
+                render_pass.set_bind_group(0, layout, &[]);
+                sampler = Some(group.linear);
             }
-        }
-
-        if !self.linear.is_empty() {
-            render_pass.set_bind_group(0, &self.linear_layout, &[]);
-
-            for group in &self.linear {
-                render_pass.set_bind_group(1, group.atlas.as_ref(), &[]);
-                render_pass.draw(0..6, offset..offset + group.instance_count as u32);
-
-                offset += group.instance_count as u32;
-            }
+            let base = if group.linear { self.nearest_total } else { 0 } + group.start;
+            render_pass.set_bind_group(1, group.atlas.as_ref(), &[]);
+            render_pass.draw(0..6, base as u32..(base + group.instance_count) as u32);
         }
     }
 
     fn clear(&mut self) {
-        self.nearest.clear();
+        self.groups.clear();
         self.nearest_total = 0;
-
-        self.linear.clear();
         self.linear_total = 0;
     }
 }
