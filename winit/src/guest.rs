@@ -53,6 +53,13 @@ impl GuestConnection {
     ///
     /// Returns `None` off Wayland or when the reader thread cannot start.
     pub fn of(display: &winit::event_loop::OwnedDisplayHandle) -> Option<Arc<Self>> {
+        Self::with_startup(display, Arc::clone)
+    }
+
+    pub(crate) fn with_startup<T>(
+        display: &winit::event_loop::OwnedDisplayHandle,
+        initialize: impl FnOnce(&Arc<Self>) -> T,
+    ) -> Option<T> {
         use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 
         static GUESTS: Mutex<Vec<(usize, Weak<GuestConnection>)>> = Mutex::new(Vec::new());
@@ -72,7 +79,8 @@ impl GuestConnection {
             .find(|(known, _)| *known == pointer as usize)
             .and_then(|(_, guest)| guest.upgrade())
         {
-            return Some(guest);
+            drop(guests);
+            return Some(initialize(&guest));
         }
         let display = Arc::new(display.clone());
 
@@ -82,19 +90,29 @@ impl GuestConnection {
         // ownership, so winit closes the display after the last share drops.
         #[allow(unsafe_code, reason = "adopts winit's Wayland display")]
         let backend = unsafe { Backend::from_foreign_display(pointer.cast()) };
-        let guest = Arc::new(Self::start(Connection::from_backend(backend), display)?);
+        let (ready, startup) = mpsc::channel();
+        let guest = Arc::new(Self::start(
+            Connection::from_backend(backend),
+            display,
+            startup,
+        )?);
         guests.push((pointer as usize, Arc::downgrade(&guest)));
-        Some(guest)
+        drop(guests);
+        let result = initialize(&guest);
+        drop(ready);
+        Some(result)
     }
 
     fn start(
         connection: Connection,
         display: Arc<winit::event_loop::OwnedDisplayHandle>,
+        startup: mpsc::Receiver<()>,
     ) -> Option<Self> {
         let reader_connection = connection.clone();
         let reader_display = Arc::clone(&display);
         let reader = Reader::spawn(move |shared, wake| {
             let _display = reader_display;
+            let _ = startup.recv();
             read(&reader_connection, &shared, &wake);
         })?;
         Some(Self {

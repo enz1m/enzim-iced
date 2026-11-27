@@ -153,10 +153,20 @@ pub mod platform {
         /// one, or when the provider does not handle this display, the
         /// built-in transport is used exactly as [`Clipboard::new`] would.
         pub fn connected(display: &OwnedDisplayHandle) -> Self {
-            match PROVIDER
-                .get()
-                .map(|provider| provider.connect(display.clone()))
-            {
+            let connection = PROVIDER.get().map(|provider| {
+                // Wayland startup round trips can miss replies that a second reader
+                // dispatches before they begin waiting on the socket.
+                #[cfg(all(target_os = "linux", feature = "wayland"))]
+                if let Some(connected) =
+                    crate::guest::GuestConnection::with_startup(display, |_| {
+                        provider.connect(display.clone())
+                    })
+                {
+                    return connected;
+                }
+                provider.connect(display.clone())
+            });
+            match connection {
                 Some(Connection::Adopted(backend)) => Clipboard {
                     state: State::Provided { backend },
                 },
