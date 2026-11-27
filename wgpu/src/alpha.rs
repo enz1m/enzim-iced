@@ -5,6 +5,7 @@ use crate::core::time::{Duration, Instant};
 use crate::core::{Point, Size};
 
 use std::num::NonZeroU64;
+use std::sync::OnceLock;
 
 /// Renderer-owned alpha-group resource and command counts.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -59,12 +60,9 @@ pub(crate) struct MaskBackdrop {
 }
 
 pub(crate) struct State {
-    pipeline: wgpu::RenderPipeline,
-    /// Scales the target by a rounded clip's coverage (enzUI-ICED #3442).
-    mask_pipeline: wgpu::RenderPipeline,
-    mask_backdrop_pipeline: wgpu::RenderPipeline,
-    mask_buffer: wgpu::Buffer,
-    mask_bind_group: wgpu::BindGroup,
+    device: wgpu::Device,
+    pipeline: OnceLock<wgpu::RenderPipeline>,
+    mask: OnceLock<Mask>,
     /// A mask the next composite draws in its own pass, after compositing.
     trailing_mask: Option<MaskBackdrop>,
     texture_layout: wgpu::BindGroupLayout,
@@ -77,6 +75,13 @@ pub(crate) struct State {
     size: Size<u32>,
     uniform_cursor: usize,
     statistics: Statistics,
+}
+
+struct Mask {
+    multiply: wgpu::RenderPipeline,
+    backdrop: wgpu::RenderPipeline,
+    buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 }
 
 struct Target {
@@ -131,130 +136,6 @@ impl State {
                 count: None,
             }],
         });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("iced_wgpu alpha pipeline layout"),
-            bind_group_layouts: &[Some(&texture_layout), Some(&uniform_layout)],
-            immediate_size: 0,
-        });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("iced_wgpu alpha shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(format!(
-                "{}\n{}",
-                include_str!("shader/clip.wgsl"),
-                include_str!("shader/alpha.wgsl")
-            ))),
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("iced_wgpu alpha pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-        let mask_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("iced_wgpu mask uniform layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: NonZeroU64::new(MASK_UNIFORM_BYTES),
-                },
-                count: None,
-            }],
-        });
-        let mask_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("iced_wgpu mask shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(format!(
-                "{}\n{}",
-                include_str!("shader/clip.wgsl"),
-                include_str!("shader/mask.wgsl")
-            ))),
-        });
-        // Multiplies every channel of the target by the fragment's coverage.
-        let multiply = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::Zero,
-            dst_factor: wgpu::BlendFactor::Src,
-            operation: wgpu::BlendOperation::Add,
-        };
-        let mask_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("iced_wgpu mask pipeline layout"),
-            bind_group_layouts: &[Some(&mask_layout)],
-            immediate_size: 0,
-        });
-        let mask_pipeline_with = |entry_point: &str, blend: wgpu::BlendComponent| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("iced_wgpu mask pipeline"),
-                layout: Some(&mask_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &mask_shader,
-                    entry_point: Some("mask_vs"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &mask_shader,
-                    entry_point: Some(entry_point),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState {
-                            color: blend,
-                            alpha: blend,
-                        }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let mask_pipeline = mask_pipeline_with("mask_multiply_fs", multiply);
-        let mask_backdrop_pipeline = mask_pipeline_with(
-            "mask_backdrop_fs",
-            wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            },
-        );
-        let mask_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("iced_wgpu mask uniforms"),
-            size: MASK_UNIFORM_BYTES,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mask_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("iced_wgpu mask bind group"),
-            layout: &mask_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: mask_buffer.as_entire_binding(),
-            }],
-        });
-
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("iced_wgpu alpha sampler"),
             mag_filter: wgpu::FilterMode::Nearest,
@@ -269,11 +150,9 @@ impl State {
         });
 
         Self {
-            pipeline,
-            mask_pipeline,
-            mask_backdrop_pipeline,
-            mask_buffer,
-            mask_bind_group,
+            device: device.clone(),
+            pipeline: OnceLock::new(),
+            mask: OnceLock::new(),
             trailing_mask: None,
             texture_layout,
             uniform_layout,
@@ -286,6 +165,150 @@ impl State {
             uniform_cursor: 0,
             statistics: Statistics::default(),
         }
+    }
+
+    fn pipeline(&self) -> &wgpu::RenderPipeline {
+        self.pipeline.get_or_init(|| {
+            let device = &self.device;
+            let format = self.format;
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("iced_wgpu alpha pipeline layout"),
+                bind_group_layouts: &[Some(&self.texture_layout), Some(&self.uniform_layout)],
+                immediate_size: 0,
+            });
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("iced_wgpu alpha shader"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(format!(
+                    "{}\n{}",
+                    include_str!("shader/clip.wgsl"),
+                    include_str!("shader/alpha.wgsl")
+                ))),
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("iced_wgpu alpha pipeline"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        })
+    }
+
+    fn mask_resources(&self) -> &Mask {
+        self.mask.get_or_init(|| {
+            let device = &self.device;
+            let format = self.format;
+            let mask_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("iced_wgpu mask uniform layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(MASK_UNIFORM_BYTES),
+                    },
+                    count: None,
+                }],
+            });
+            let mask_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("iced_wgpu mask shader"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(format!(
+                    "{}\n{}",
+                    include_str!("shader/clip.wgsl"),
+                    include_str!("shader/mask.wgsl")
+                ))),
+            });
+            // Multiplies every channel of the target by the fragment's coverage.
+            let multiply = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::Src,
+                operation: wgpu::BlendOperation::Add,
+            };
+            let mask_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("iced_wgpu mask pipeline layout"),
+                    bind_group_layouts: &[Some(&mask_layout)],
+                    immediate_size: 0,
+                });
+            let mask_pipeline_with = |entry_point: &str, blend: wgpu::BlendComponent| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("iced_wgpu mask pipeline"),
+                    layout: Some(&mask_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &mask_shader,
+                        entry_point: Some("mask_vs"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &mask_shader,
+                        entry_point: Some(entry_point),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState {
+                                color: blend,
+                                alpha: blend,
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+            let mask_pipeline = mask_pipeline_with("mask_multiply_fs", multiply);
+            let mask_backdrop_pipeline = mask_pipeline_with(
+                "mask_backdrop_fs",
+                wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            );
+            let mask_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("iced_wgpu mask uniforms"),
+                size: MASK_UNIFORM_BYTES,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mask_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("iced_wgpu mask bind group"),
+                layout: &mask_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: mask_buffer.as_entire_binding(),
+                }],
+            });
+            Mask {
+                multiply: mask_pipeline,
+                backdrop: mask_backdrop_pipeline,
+                buffer: mask_buffer,
+                bind_group: mask_bind_group,
+            }
+        })
     }
 
     pub fn begin_frame(&mut self, device: &wgpu::Device, size: Size<u32>, max_depth: usize) {
@@ -407,16 +430,21 @@ impl State {
         uniforms[8..12].copy_from_slice(&backdrop.clear);
         uniforms[12..16].copy_from_slice(&backdrop.base);
         uniforms[16] = backdrop.base_coverage_power;
-        queue.write_buffer(&self.mask_buffer, 0, bytemuck::cast_slice(&uniforms));
+        queue.write_buffer(
+            &self.mask_resources().buffer,
+            0,
+            bytemuck::cast_slice(&uniforms),
+        );
     }
 
     fn draw_mask(&self, render_pass: &mut wgpu::RenderPass<'_>, backdrop: &MaskBackdrop) {
         render_pass.set_scissor_rect(0, 0, self.size.width, self.size.height);
-        render_pass.set_bind_group(0, &self.mask_bind_group, &[]);
-        render_pass.set_pipeline(&self.mask_pipeline);
+        let mask = self.mask_resources();
+        render_pass.set_bind_group(0, &mask.bind_group, &[]);
+        render_pass.set_pipeline(&mask.multiply);
         render_pass.draw(0..6, 0..1);
         if backdrop.clear[3] > 0.0 || backdrop.base[3] > 0.0 {
-            render_pass.set_pipeline(&self.mask_backdrop_pipeline);
+            render_pass.set_pipeline(&mask.backdrop);
             render_pass.draw(0..6, 0..1);
         }
     }
@@ -499,7 +527,7 @@ impl State {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(self.pipeline());
         let (mut left, mut top, mut right, mut bottom) = (0, 0, self.size.width, self.size.height);
         if clip.radius.iter().any(|radius| *radius > 0.0)
             && clip.rect.iter().all(|value| value.is_finite())
@@ -624,7 +652,7 @@ impl State {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(self.pipeline());
         pass.set_bind_group(0, &self.targets[0].bind_group, &[]);
         for (uniform, [x, y, width, height]) in &draws {
             pass.set_scissor_rect(*x, *y, *width, *height);

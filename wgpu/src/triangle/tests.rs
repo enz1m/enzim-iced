@@ -79,6 +79,7 @@ fn pixel(frame: &[u8], x: u32, y: u32) -> [u8; 3] {
 #[test]
 fn a_small_mesh_layer_is_multisampled_in_a_target_the_size_of_its_bounds() {
     let mut renderer = renderer();
+    assert!(!renderer.engine.has_triangle_pipeline());
     let near = Rectangle::new([24.0, 16.0].into(), Size::new(30.0, 20.0));
     let far = Rectangle::new([520.0, 340.0].into(), Size::new(40.0, 30.0));
 
@@ -135,9 +136,10 @@ fn a_small_mesh_layer_is_multisampled_in_a_target_the_size_of_its_bounds() {
         "nothing at the frame origin"
     );
 
+    assert!(renderer.engine.has_triangle_pipeline());
     let sizes = renderer
         .engine
-        .triangle_pipeline
+        .triangle_pipeline()
         .msaa
         .as_ref()
         .expect("multisampling is on")

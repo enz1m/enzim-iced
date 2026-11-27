@@ -2088,7 +2088,7 @@ impl Renderer {
 
             clear: clear::State::new(&engine.device, &engine.clear_pipeline),
             quad: quad::State::new(),
-            triangle: triangle::State::new(&engine.triangle_pipeline),
+            triangle: triangle::State::new(engine.antialiasing),
             text: text::State::new(),
             text_viewport: engine.text_pipeline.create_viewport(&engine.device),
 
@@ -3578,7 +3578,7 @@ impl Renderer {
                 let prepare_span = debug::prepare(debug::Primitive::Triangle);
 
                 self.triangle.prepare(
-                    &self.engine.triangle_pipeline,
+                    self.engine.triangle_pipeline(),
                     &self.engine.device,
                     &mut self.staging_belt,
                     encoder,
@@ -4154,7 +4154,7 @@ impl Renderer {
 
                 let render_span = debug::render(debug::Primitive::Triangle);
                 mesh_layer += self.triangle.render(
-                    &self.engine.triangle_pipeline,
+                    self.engine.triangle_pipeline(),
                     encoder,
                     target,
                     mesh_layer,

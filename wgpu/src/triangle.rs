@@ -170,9 +170,9 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(pipeline: &Pipeline) -> Self {
+    pub fn new(antialiasing: Option<Antialiasing>) -> Self {
         Self {
-            msaa: pipeline.msaa.as_ref().map(|_| msaa::State::new()),
+            msaa: antialiasing.map(|_| msaa::State::new()),
             layers: Vec::new(),
             prepare_layer: 0,
             storage: Storage::new(),

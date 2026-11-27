@@ -6,7 +6,7 @@ use crate::quad;
 use crate::text;
 use crate::triangle;
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 #[derive(Clone)]
 pub struct Engine {
@@ -18,7 +18,8 @@ pub struct Engine {
     pub(crate) clear_pipeline: clear::Pipeline,
     pub(crate) quad_pipeline: quad::Pipeline,
     pub(crate) text_pipeline: text::Pipeline,
-    pub(crate) triangle_pipeline: triangle::Pipeline,
+    triangle_pipeline: Arc<OnceLock<triangle::Pipeline>>,
+    pub(crate) antialiasing: Option<Antialiasing>,
     #[cfg(any(feature = "image", feature = "svg"))]
     pub(crate) image_pipeline: crate::image::Pipeline,
     pub(crate) primitive_storage: Arc<RwLock<primitive::Storage>>,
@@ -32,7 +33,7 @@ impl Engine {
         device: wgpu::Device,
         queue: wgpu::Queue,
         format: wgpu::TextureFormat,
-        antialiasing: Option<Antialiasing>, // TODO: Initialize AA pipelines lazily
+        antialiasing: Option<Antialiasing>,
         shell: Shell,
     ) -> Self {
         Self {
@@ -42,7 +43,8 @@ impl Engine {
             clear_pipeline: clear::Pipeline::new(&device, format),
             quad_pipeline: quad::Pipeline::new(&device, format),
             text_pipeline: text::Pipeline::new(&device, &queue, format),
-            triangle_pipeline: triangle::Pipeline::new(&device, format, antialiasing),
+            triangle_pipeline: Arc::new(OnceLock::new()),
+            antialiasing,
 
             #[cfg(any(feature = "image", feature = "svg"))]
             image_pipeline: {
@@ -58,6 +60,16 @@ impl Engine {
             queue,
             _shell: shell,
         }
+    }
+
+    pub(crate) fn triangle_pipeline(&self) -> &triangle::Pipeline {
+        self.triangle_pipeline
+            .get_or_init(|| triangle::Pipeline::new(&self.device, self.format, self.antialiasing))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_triangle_pipeline(&self) -> bool {
+        self.triangle_pipeline.get().is_some()
     }
 
     /// Whether the device under this engine has been lost; see
