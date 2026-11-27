@@ -1136,12 +1136,13 @@ dependencies = [
 [[package]]
 name = "cosmic-text"
 version = "0.19.0"
-source = "git+https://github.com/enz1m/enzim-cosmic-text.git?rev=739e9d9e469e6f943a3eea233b6dc77ae3832ab5#739e9d9e469e6f943a3eea233b6dc77ae3832ab5"
+source = "git+https://github.com/enz1m/enzim-cosmic-text.git?rev=eeaa0eb774c4757a9e001cc748fcb79044fa8722#eeaa0eb774c4757a9e001cc748fcb79044fa8722"
 dependencies = [
  "bitflags 2.13.1",
  "fontconfig-parser",
  "fontdb",
  "harfrust",
+ "hashbrown 0.17.1",
  "libloading",
  "linebender_resource_handle",
  "log",
@@ -1264,7 +1265,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 [[package]]
 name = "cryoglyph"
 version = "0.1.0"
-source = "git+https://github.com/enz1m/enzim-cryoglyph.git?rev=bd2494fbd903f9cfac4c5b3065ff216850c0c5d3#bd2494fbd903f9cfac4c5b3065ff216850c0c5d3"
+source = "git+https://github.com/enz1m/enzim-cryoglyph.git?rev=cd11d9961d86a4caa32e8b69311ee2d7982e6bcf#cd11d9961d86a4caa32e8b69311ee2d7982e6bcf"
 dependencies = [
  "cosmic-text",
  "etagere",
