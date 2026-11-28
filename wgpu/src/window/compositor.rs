@@ -373,6 +373,7 @@ impl graphics::lane::Backend for LaneBackend {
             return;
         }
 
+        request_preserved_contents(surface, self.wayland);
         self.renderer.engine.configure_surface(
             surface,
             &wgpu::SurfaceConfiguration {
@@ -895,6 +896,7 @@ impl graphics::Compositor for Compositor {
             return;
         }
 
+        request_preserved_contents(surface, self.wayland);
         self.engine.configure_surface(
             surface,
             &wgpu::SurfaceConfiguration {
@@ -1049,6 +1051,25 @@ impl From<backend::Settings> for Settings {
             antialiasing: settings.antialiasing.then_some(Antialiasing::MSAAx4),
             backends,
             power_preference: settings.power_preference,
+        }
+    }
+}
+
+#[cfg_attr(
+    all(feature = "vulkan", target_os = "linux"),
+    expect(
+        unsafe_code,
+        reason = "opts the owned native surface into preservation"
+    )
+)]
+fn request_preserved_contents(_surface: &wgpu::Surface<'_>, _wayland: bool) {
+    #[cfg(all(feature = "vulkan", target_os = "linux"))]
+    if _wayland && !crate::present_history::disabled() {
+        // SAFETY: iced owns this Wayland window's WSI and serializes access when
+        // handing the surface between its UI and render lane.
+        if let Some(raw) = unsafe { _surface.as_hal::<wgpu::hal::api::Vulkan>() } {
+            // SAFETY: this is a native Vulkan Wayland surface owned by iced.
+            unsafe { raw.request_preserved_contents() };
         }
     }
 }

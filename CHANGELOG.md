@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Copy only changed regions into reused Vulkan Wayland swapchain images on Intel Mesa and NVIDIA proprietary drivers. Set `ICED_DISABLE_PARTIAL_PRESENT=1` to force full copies.
+
 ## [0.14.0] - 2025-12-07
 ### Added
 - Reactive rendering. [#2662](https://github.com/iced-rs/iced/pull/2662)

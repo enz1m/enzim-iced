@@ -224,7 +224,7 @@ bytemuck = { version = "1.0", features = ["derive"] }
 bytes = "1.6"
 cargo-hot = { version = "0.1", package = "cargo-hot-protocol" }
 cosmic-text = { git = "https://github.com/enz1m/enzim-cosmic-text.git", rev = "eeaa0eb774c4757a9e001cc748fcb79044fa8722", version = "0.19" }
-cryoglyph = { git = "https://github.com/enz1m/enzim-cryoglyph.git", rev = "cd11d9961d86a4caa32e8b69311ee2d7982e6bcf" }
+cryoglyph = { git = "https://github.com/enz1m/enzim-cryoglyph.git", rev = "73041979b79165552efe25a50462f5e488623bfc" }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 glam = "0.33.2"
 guillotiere = "0.6"
@@ -270,7 +270,7 @@ wasm-bindgen-futures = "0.4"
 wasmtimer = "0.4.2"
 web-sys = "0.3.104"
 web-time = "1.1"
-wgpu = { git = "https://github.com/enz1m/enzim-wgpu.git", rev = "798421e7ac9091704835a8a733adfa2d7134dafb", version = "30", default-features = false, features = ["std", "wgsl"] }
+wgpu = { git = "https://github.com/enz1m/enzim-wgpu.git", rev = "369c5fb5bf66d670efba7f9237d424b1ec4197b4", version = "30", default-features = false, features = ["std", "wgsl"] }
 winit = { git = "https://github.com/enz1m/enzim-winit.git", rev = "405e1caca89357f6da20eafe7ed8abc686567092", default-features = false, features = ["rwh_06"] }
 
 [workspace.lints.rust]

@@ -52,6 +52,7 @@ mod owned_media;
 mod owned_media;
 mod owned_quad;
 mod owned_scroll;
+mod present_history;
 mod quad;
 mod readback_audit;
 mod rounded_elision;
@@ -554,6 +555,7 @@ pub struct Renderer {
     /// enzUI: what the last frame changed on the canvas, `[x, y, width,
     /// height]` in physical pixels; `None` for all of it.
     present_damage: Option<Vec<[u32; 4]>>,
+    present_history: present_history::History,
     /// An image was still loading when the last lane frame was painted: it
     /// can appear on the next without a new recording.
     images_pending: bool,
@@ -2069,6 +2071,7 @@ impl Renderer {
             turns_geometry: true,
             paint_regions: Vec::new(),
             present_damage: None,
+            present_history: present_history::History::default(),
             images_pending: false,
             presentation_sample_valid: false,
             presentation_inputs: Vec::new(),
@@ -3029,12 +3032,32 @@ impl Renderer {
             self.images_pending = self.image_cache.borrow().has_pending();
         }
         let canvas = self.canvas.as_ref().expect("the canvas was just made");
+        let changed = if damage == damage::Damage::Full {
+            None
+        } else {
+            self.present_damage.as_deref()
+        };
+        let (copy, can_hint) = self.present_history.copy_region(target, size, changed);
+        if !can_hint {
+            self.present_damage = None;
+        }
+        let origin = wgpu::Origin3d {
+            x: copy.x,
+            y: copy.y,
+            z: 0,
+        };
         encoder.copy_texture_to_texture(
-            canvas.texture.as_image_copy(),
-            target.as_image_copy(),
+            wgpu::TexelCopyTextureInfo {
+                origin,
+                ..canvas.texture.as_image_copy()
+            },
+            wgpu::TexelCopyTextureInfo {
+                origin,
+                ..target.as_image_copy()
+            },
             wgpu::Extent3d {
-                width: size.width,
-                height: size.height,
+                width: copy.width,
+                height: copy.height,
                 depth_or_array_layers: 1,
             },
         );
